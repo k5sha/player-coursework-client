@@ -6,6 +6,7 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.DataLine;
+ import javax.sound.sampled.FloatControl;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.UnsupportedAudioFileException;
@@ -17,7 +18,11 @@ public class SimpleAudioPlayer {
 
     private static final int BUFFER_SIZE = 8 * 1024;
 
+    private final Object pauseLock = new Object();
+
     private volatile boolean playing;
+    private volatile boolean paused;
+    private volatile float volume = 1.0f;
     private Thread playbackThread;
     private SourceDataLine line;
 
@@ -46,9 +51,11 @@ public class SimpleAudioPlayer {
             SourceDataLine newLine = (SourceDataLine) AudioSystem.getLine(
                     new DataLine.Info(SourceDataLine.class, format));
             newLine.open(format);
+            applyVolume(newLine);
 
             line = newLine;
             playing = true;
+            paused = false;
 
             AudioInputStream audioStream = input;
             playbackThread = new Thread(() -> playLoop(newLine, audioStream), "Audio playback");
@@ -61,6 +68,10 @@ public class SimpleAudioPlayer {
 
     public void stop() {
         playing = false;
+        paused = false;
+        synchronized (pauseLock) {
+            pauseLock.notifyAll();
+        }
 
         SourceDataLine currentLine = line;
         try {
@@ -83,12 +94,96 @@ public class SimpleAudioPlayer {
         playbackThread = null;
     }
 
+    public void pause() {
+        if (!playing || paused) {
+            return;
+        }
+
+        paused = true;
+        SourceDataLine currentLine = line;
+        try {
+            if (currentLine != null && currentLine.isOpen()) {
+                currentLine.stop();
+            }
+        } catch (IllegalStateException ignored) {
+            // Лінію вже закрито потоком відтворення.
+        }
+    }
+
+    public void resume() {
+        if (!playing || !paused) {
+            return;
+        }
+
+        paused = false;
+        synchronized (pauseLock) {
+            pauseLock.notifyAll();
+        }
+
+        SourceDataLine currentLine = line;
+        try {
+            if (currentLine != null && currentLine.isOpen()) {
+                currentLine.start();
+            }
+        } catch (IllegalStateException ignored) {
+            // Лінію вже закрито потоком відтворення.
+        }
+    }
+
+    public void togglePause() {
+        if (paused) {
+            resume();
+        } else {
+            pause();
+        }
+    }
+
+    public boolean isPaused() {
+        return paused;
+    }
+
+    public boolean isPlaying() {
+        return playing;
+    }
+
+    public void setVolume(float volume) {
+        this.volume = Math.max(0.0f, Math.min(1.0f, volume));
+        applyVolume(line);
+    }
+
+    public float getVolume() {
+        return volume;
+    }
+
+    private void applyVolume(SourceDataLine dataLine) {
+        if (dataLine == null || !dataLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
+            return;
+        }
+
+        FloatControl gain = (FloatControl) dataLine.getControl(FloatControl.Type.MASTER_GAIN);
+        float decibels = volume <= 0.0f
+                ? gain.getMinimum()
+                : (float) (20.0 * Math.log10(volume));
+        decibels = Math.max(gain.getMinimum(), Math.min(gain.getMaximum(), decibels));
+        try {
+            gain.setValue(decibels);
+        } catch (IllegalArgumentException ignored) {
+            // Контролер не прийняв значення — залишаємо попередню гучність.
+        }
+    }
+
     private void playLoop(SourceDataLine dataLine, AudioInputStream input) {
         byte[] buffer = new byte[BUFFER_SIZE];
         try {
-            dataLine.start();
+            if (!paused) {
+                dataLine.start();
+            }
             int read;
             while (playing && (read = input.read(buffer, 0, buffer.length)) != -1) {
+                awaitResume();
+                if (!playing) {
+                    break;
+                }
                 dataLine.write(buffer, 0, read);
             }
             if (playing) {
@@ -98,8 +193,22 @@ public class SimpleAudioPlayer {
             // Відтворення зупинено викликом stop().
         } finally {
             playing = false;
+            paused = false;
             closeQuietly(input);
             dataLine.close();
+        }
+    }
+
+    private void awaitResume() {
+        synchronized (pauseLock) {
+            while (playing && paused) {
+                try {
+                    pauseLock.wait(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
         }
     }
 
