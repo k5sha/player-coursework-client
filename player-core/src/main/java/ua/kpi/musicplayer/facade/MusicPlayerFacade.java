@@ -4,12 +4,15 @@ import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.memento.PlayerMemento;
 import ua.kpi.musicplayer.model.Track;
+import ua.kpi.musicplayer.observer.PlayerObserver;
+import ua.kpi.musicplayer.observer.PlayerState;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.storage.TrackStorage;
 import ua.kpi.musicplayer.stream.RadioBrowserClient;
 import ua.kpi.musicplayer.stream.RadioStation;
 
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
 public class MusicPlayerFacade {
@@ -18,19 +21,52 @@ public class MusicPlayerFacade {
     private final PlaybackQueue queue = new PlaybackQueue();
     private final TrackStorage storage = new TrackStorage();
     private final RadioBrowserClient radioBrowserClient = new RadioBrowserClient();
+    private final List<PlayerObserver> observers = new CopyOnWriteArrayList<>();
 
     private volatile String currentStreamUrl;
     private Consumer<Boolean> onTrackFinished;
 
+    public void addObserver(PlayerObserver observer) {
+        if (observer != null) {
+            observers.add(observer);
+        }
+    }
+
+    public void removeObserver(PlayerObserver observer) {
+        observers.remove(observer);
+    }
+
+    public PlayerState getState() {
+        return new PlayerState(
+                queue.getCurrentTrack(),
+                queue.getCurrentIndex(),
+                player.isPlaying(),
+                player.isPaused(),
+                currentStreamUrl);
+    }
+
+    private void notifyObservers() {
+        if (observers.isEmpty()) {
+            return;
+        }
+
+        PlayerState state = getState();
+        for (PlayerObserver observer : observers) {
+            observer.onPlayerStateChanged(state);
+        }
+    }
+
     public List<Track> loadSavedTracks() {
         List<Track> savedTracks = storage.loadTracks();
         queue.addTracks(savedTracks);
+        notifyObservers();
         return savedTracks;
     }
 
     public void addTracksAndSave(List<Track> tracks) {
         queue.addTracks(tracks);
         storage.saveTracks(queue.getTracks());
+        notifyObservers();
     }
 
     public void clearQueueAndSave() {
@@ -40,6 +76,7 @@ public class MusicPlayerFacade {
             player.stop();
         }
         storage.saveTracks(queue.getTracks());
+        notifyObservers();
     }
 
     public Track playTrackAt(int index) {
@@ -70,6 +107,7 @@ public class MusicPlayerFacade {
         }
         currentStreamUrl = null;
         player.play(track);
+        notifyObservers();
         return track;
     }
 
@@ -84,6 +122,7 @@ public class MusicPlayerFacade {
         if (started) {
             currentStreamUrl = streamUrl;
         }
+        notifyObservers();
         return started;
     }
 
@@ -93,6 +132,7 @@ public class MusicPlayerFacade {
 
     public void togglePause() {
         player.togglePause();
+        notifyObservers();
     }
 
     public boolean isPlaying() {
@@ -106,6 +146,7 @@ public class MusicPlayerFacade {
     public void stop() {
         currentStreamUrl = null;
         player.stop();
+        notifyObservers();
     }
 
     public void setOnTrackFinished(Consumer<Boolean> onTrackFinished) {
@@ -129,6 +170,7 @@ public class MusicPlayerFacade {
         if (callback != null) {
             callback.accept(streamFinished);
         }
+        notifyObservers();
     }
 
     public List<Track> getTracks() {
@@ -156,7 +198,9 @@ public class MusicPlayerFacade {
     }
 
     public PlaybackQueue.RepeatMode cycleRepeatMode() {
-        return queue.cycleRepeatMode();
+        PlaybackQueue.RepeatMode mode = queue.cycleRepeatMode();
+        notifyObservers();
+        return mode;
     }
 
     public boolean isShuffle() {
@@ -165,6 +209,7 @@ public class MusicPlayerFacade {
 
     public void toggleShuffle() {
         queue.toggleShuffle();
+        notifyObservers();
     }
 
     public void applyEqualizerPreset(Equalizer.Preset preset) {
@@ -217,6 +262,7 @@ public class MusicPlayerFacade {
                 queue.getCurrentIndex() == memento.getCurrentIndex()
                         ? memento.getPositionSeconds()
                         : 0);
+        notifyObservers();
     }
 
     public double getCurrentPositionSeconds() {

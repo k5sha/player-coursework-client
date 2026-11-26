@@ -21,6 +21,7 @@ import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.facade.MusicPlayerFacade;
 import ua.kpi.musicplayer.memento.PlayerMemento;
 import ua.kpi.musicplayer.model.Track;
+import ua.kpi.musicplayer.observer.PlayerState;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
@@ -201,6 +202,8 @@ public class MainView extends VBox {
 
         facade.setOnTrackFinished(streamFinished ->
                 Platform.runLater(() -> onTrackFinished(streamFinished)));
+        facade.addObserver(state ->
+                Platform.runLater(() -> updatePlayerState(state)));
 
         updateModeControls();
 
@@ -606,6 +609,12 @@ public class MainView extends VBox {
     private static String errorMessage(Throwable error) {
         Throwable cause = error.getCause() == null ? error : error.getCause();
         return hasText(cause.getMessage()) ? cause.getMessage() : cause.toString();
+    }
+
+    private void updatePlayerState(PlayerState state) {
+        pauseButton.setText(state.isPaused() ? "Продовжити" : "Пауза");
+        trackList.refresh();
+        updateSeekControls();
     }
 
     private void onTrackFinished(boolean streamFinished) {
