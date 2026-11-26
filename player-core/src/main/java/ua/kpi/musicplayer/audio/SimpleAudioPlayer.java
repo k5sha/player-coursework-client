@@ -23,6 +23,7 @@ public class SimpleAudioPlayer {
     private volatile boolean playing;
     private volatile boolean paused;
     private volatile float volume = 1.0f;
+    private volatile Runnable onTrackFinished;
     private Thread playbackThread;
     private SourceDataLine line;
 
@@ -155,6 +156,10 @@ public class SimpleAudioPlayer {
         return volume;
     }
 
+    public void setOnTrackFinished(Runnable onTrackFinished) {
+        this.onTrackFinished = onTrackFinished;
+    }
+
     private void applyVolume(SourceDataLine dataLine) {
         if (dataLine == null || !dataLine.isControlSupported(FloatControl.Type.MASTER_GAIN)) {
             return;
@@ -174,12 +179,18 @@ public class SimpleAudioPlayer {
 
     private void playLoop(SourceDataLine dataLine, AudioInputStream input) {
         byte[] buffer = new byte[BUFFER_SIZE];
+        boolean finishedNaturally = false;
         try {
             if (!paused) {
                 dataLine.start();
             }
             int read;
-            while (playing && (read = input.read(buffer, 0, buffer.length)) != -1) {
+            while (playing) {
+                read = input.read(buffer, 0, buffer.length);
+                if (read == -1) {
+                    finishedNaturally = playing;
+                    break;
+                }
                 awaitResume();
                 if (!playing) {
                     break;
@@ -196,6 +207,13 @@ public class SimpleAudioPlayer {
             paused = false;
             closeQuietly(input);
             dataLine.close();
+        }
+
+        if (finishedNaturally) {
+            Runnable callback = onTrackFinished;
+            if (callback != null) {
+                callback.run();
+            }
         }
     }
 

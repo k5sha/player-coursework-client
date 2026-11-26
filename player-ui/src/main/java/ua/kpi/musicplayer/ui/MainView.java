@@ -1,25 +1,35 @@
 package ua.kpi.musicplayer.ui;
 
+import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
+import javafx.scene.control.ListView;
 import javafx.scene.control.Slider;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.model.Track;
+import ua.kpi.musicplayer.playback.PlaybackQueue;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 public class MainView extends VBox {
 
+    private static final String CURRENT_TRACK_STYLE =
+            "-fx-font-weight: bold; -fx-text-fill: #1565c0;";
+
     private final SimpleAudioPlayer player;
+    private final PlaybackQueue queue = new PlaybackQueue();
+    private final ListView<Track> trackList = new ListView<>();
     private final Label fileLabel = new Label("Файл не обрано");
     private final Label statusLabel = new Label("Готово до роботи");
     private final Button pauseButton = new Button("Пауза");
-    private Track currentTrack;
 
     public MainView(SimpleAudioPlayer player) {
         this.player = player;
@@ -28,14 +38,20 @@ public class MainView extends VBox {
         setPadding(new Insets(16));
         setAlignment(Pos.TOP_LEFT);
 
-        Button chooseButton = new Button("Обрати файл");
-        chooseButton.setOnAction(event -> chooseFile());
+        Button chooseButton = new Button("Обрати файли");
+        chooseButton.setOnAction(event -> chooseFiles());
 
         Button playButton = new Button("Play");
         playButton.setOnAction(event -> play());
 
         Button stopButton = new Button("Stop");
         stopButton.setOnAction(event -> stop());
+
+        Button previousButton = new Button("Попередній");
+        previousButton.setOnAction(event -> playPrevious());
+
+        Button nextButton = new Button("Наступний");
+        nextButton.setOnAction(event -> playNext());
 
         pauseButton.setOnAction(event -> togglePause());
 
@@ -44,42 +60,110 @@ public class MainView extends VBox {
         volumeSlider.valueProperty().addListener((observable, oldValue, newValue) ->
                 player.setVolume(newValue.floatValue() / 100.0f));
 
+        trackList.setPrefHeight(220);
+        trackList.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(Track track, boolean empty) {
+                super.updateItem(track, empty);
+                if (empty || track == null) {
+                    setText(null);
+                    setStyle("");
+                } else {
+                    setText(track.toString());
+                    setStyle(getIndex() == queue.getCurrentIndex() ? CURRENT_TRACK_STYLE : "");
+                }
+            }
+        });
+        trackList.setOnMouseClicked(event -> {
+            int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
+            if (event.getClickCount() == 2 && selectedIndex >= 0) {
+                playTrack(selectedIndex);
+            }
+        });
+
+        player.setOnTrackFinished(() -> Platform.runLater(this::onTrackFinished));
+
         getChildren().addAll(
-                new HBox(8, chooseButton, playButton, pauseButton, stopButton),
+                new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
+                trackList,
                 fileLabel,
                 statusLabel);
     }
 
-    private void chooseFile() {
+    private void chooseFiles() {
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Обрати аудіофайл");
+        chooser.setTitle("Обрати аудіофайли");
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
                 "Аудіофайли", "*.mp3", "*.wav", "*.flac", "*.ogg"));
 
-        File file = chooser.showOpenDialog(getScene().getWindow());
-        if (file == null) {
+        List<File> files = chooser.showOpenMultipleDialog(getScene().getWindow());
+        if (files == null || files.isEmpty()) {
             return;
         }
 
-        currentTrack = new Track(file.getName(), null, 0, file.getAbsolutePath());
-        fileLabel.setText("Обраний файл: " + currentTrack.getTitle());
-        statusLabel.setText("Файл готовий до відтворення");
+        List<Track> addedTracks = new ArrayList<>();
+        for (File file : files) {
+            addedTracks.add(new Track(file.getName(), null, 0, file.getAbsolutePath()));
+        }
+
+        queue.addTracks(addedTracks);
+        trackList.getItems().setAll(queue.getTracks());
+        trackList.getSelectionModel().select(queue.getCurrentIndex());
+        trackList.refresh();
+
+        fileLabel.setText("Додано треків: " + addedTracks.size());
+        statusLabel.setText("У списку треків: " + queue.getTracks().size());
     }
 
     private void play() {
-        if (currentTrack == null) {
-            statusLabel.setText("Спочатку оберіть файл");
+        if (queue.getTracks().isEmpty()) {
+            statusLabel.setText("Спочатку оберіть файли");
+            return;
+        }
+
+        int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
+        playTrack(selectedIndex >= 0 ? selectedIndex : queue.getCurrentIndex());
+    }
+
+    private void playTrack(int index) {
+        queue.select(index);
+        Track track = queue.getCurrentTrack();
+        if (track == null) {
+            statusLabel.setText("Спочатку оберіть файли");
             return;
         }
 
         try {
-            player.play(currentTrack);
+            player.play(track);
             pauseButton.setText("Пауза");
-            statusLabel.setText("Відтворення: " + currentTrack.getTitle());
+            fileLabel.setText("Поточний трек: " + track);
+            statusLabel.setText("Відтворення: " + track);
+            trackList.getSelectionModel().select(index);
+            trackList.refresh();
         } catch (RuntimeException e) {
             statusLabel.setText("Помилка: " + e.getMessage());
         }
+    }
+
+    private void playNext() {
+        if (!queue.hasNext()) {
+            statusLabel.setText("Наступного треку немає");
+            return;
+        }
+
+        queue.next();
+        playTrack(queue.getCurrentIndex());
+    }
+
+    private void playPrevious() {
+        if (!queue.hasPrevious()) {
+            statusLabel.setText("Попереднього треку немає");
+            return;
+        }
+
+        queue.previous();
+        playTrack(queue.getCurrentIndex());
     }
 
     private void togglePause() {
@@ -94,7 +178,8 @@ public class MainView extends VBox {
             statusLabel.setText("Пауза");
         } else {
             pauseButton.setText("Пауза");
-            statusLabel.setText("Відтворення: " + currentTrack.getTitle());
+            Track track = queue.getCurrentTrack();
+            statusLabel.setText(track == null ? "Відтворення" : "Відтворення: " + track);
         }
     }
 
@@ -102,5 +187,16 @@ public class MainView extends VBox {
         player.stop();
         pauseButton.setText("Пауза");
         statusLabel.setText("Зупинено");
+    }
+
+    private void onTrackFinished() {
+        pauseButton.setText("Пауза");
+        if (queue.hasNext()) {
+            queue.next();
+            playTrack(queue.getCurrentIndex());
+        } else {
+            statusLabel.setText("Відтворення завершено");
+            trackList.refresh();
+        }
     }
 }

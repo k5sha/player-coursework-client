@@ -48,4 +48,29 @@ public class Track {
     public void setLocation(String location) {
         this.location = location;
     }
+
+    @Override
+    public String toString() {
+        boolean hasArtist = artist != null && !artist.isBlank();
+        boolean hasTitle = title != null && !title.isBlank();
+
+        if (hasArtist && hasTitle) {
+            return artist.trim() + " - " + title.trim();
+        }
+        if (hasTitle) {
+            return title.trim();
+        }
+
+        String fileName = fileNameFromLocation();
+        return fileName.isEmpty() ? "Без назви" : fileName;
+    }
+
+    private String fileNameFromLocation() {
+        if (location == null || location.isBlank()) {
+            return "";
+        }
+
+        int separator = Math.max(location.lastIndexOf('/'), location.lastIndexOf('\\'));
+        return separator >= 0 ? location.substring(separator + 1) : location;
+    }
 }
