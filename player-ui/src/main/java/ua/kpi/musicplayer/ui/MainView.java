@@ -4,6 +4,7 @@ import javafx.application.Platform;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
+import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
@@ -12,6 +13,7 @@ import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import ua.kpi.musicplayer.audio.AudioMetadataReader;
+import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
@@ -34,6 +36,10 @@ public class MainView extends VBox {
     private final Button pauseButton = new Button("Пауза");
     private final Button repeatButton = new Button();
     private final Button shuffleButton = new Button();
+    private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
+    private Slider lowEqSlider;
+    private Slider midEqSlider;
+    private Slider highEqSlider;
 
     public MainView(SimpleAudioPlayer player) {
         this.player = player;
@@ -76,6 +82,30 @@ public class MainView extends VBox {
         volumeSlider.valueProperty().addListener((observable, oldValue, newValue) ->
                 player.setVolume(newValue.floatValue() / 100.0f));
 
+        lowEqSlider = createEqSlider(Equalizer.LOW_BAND);
+        midEqSlider = createEqSlider(Equalizer.MID_BAND);
+        highEqSlider = createEqSlider(Equalizer.HIGH_BAND);
+
+        equalizerPresetBox.getItems().setAll(Equalizer.Preset.values());
+        equalizerPresetBox.setValue(Equalizer.Preset.FLAT);
+        equalizerPresetBox.setOnAction(event -> {
+            Equalizer.Preset preset = equalizerPresetBox.getValue();
+            if (preset == null) {
+                return;
+            }
+            player.getEqualizer().applyPreset(preset);
+            updateEqualizerControls();
+            statusLabel.setText("Еквалайзер: " + preset.getDisplayName());
+        });
+
+        Button resetEqualizerButton = new Button("Скинути");
+        resetEqualizerButton.setOnAction(event -> {
+            player.getEqualizer().reset();
+            equalizerPresetBox.setValue(Equalizer.Preset.FLAT);
+            updateEqualizerControls();
+            statusLabel.setText("Еквалайзер скинуто");
+        });
+
         trackList.setPrefHeight(220);
         trackList.setCellFactory(list -> new ListCell<>() {
             @Override
@@ -104,11 +134,31 @@ public class MainView extends VBox {
         getChildren().addAll(
                 new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
+                new HBox(8, new Label("Еквалайзер:"), equalizerPresetBox, resetEqualizerButton),
+                new HBox(8, new Label("Низькі:"), lowEqSlider),
+                new HBox(8, new Label("Середні:"), midEqSlider),
+                new HBox(8, new Label("Високі:"), highEqSlider),
                 new HBox(8, new Label("Режими:"), repeatButton, shuffleButton),
                 trackList,
                 trackInfoLabel,
                 fileLabel,
                 statusLabel);
+    }
+
+    private Slider createEqSlider(int band) {
+        Slider slider = new Slider(Equalizer.MIN_GAIN_DB, Equalizer.MAX_GAIN_DB,
+                player.getEqualizer().getBandGainDb(band));
+        slider.setPrefWidth(160);
+        slider.setBlockIncrement(1);
+        slider.valueProperty().addListener((observable, oldValue, newValue) ->
+                player.getEqualizer().setBandGainDb(band, newValue.floatValue()));
+        return slider;
+    }
+
+    private void updateEqualizerControls() {
+        lowEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.LOW_BAND));
+        midEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.MID_BAND));
+        highEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.HIGH_BAND));
     }
 
     private void chooseFiles() {

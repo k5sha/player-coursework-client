@@ -19,6 +19,7 @@ public class SimpleAudioPlayer {
     private static final int BUFFER_SIZE = 8 * 1024;
 
     private final Object pauseLock = new Object();
+    private final Equalizer equalizer = new Equalizer();
 
     private volatile boolean playing;
     private volatile boolean paused;
@@ -53,13 +54,15 @@ public class SimpleAudioPlayer {
                     new DataLine.Info(SourceDataLine.class, format));
             newLine.open(format);
             applyVolume(newLine);
+            equalizer.resetState();
 
             line = newLine;
             playing = true;
             paused = false;
 
             AudioInputStream audioStream = input;
-            playbackThread = new Thread(() -> playLoop(newLine, audioStream), "Audio playback");
+            AudioFormat playbackFormat = format;
+            playbackThread = new Thread(() -> playLoop(newLine, audioStream, playbackFormat), "Audio playback");
             playbackThread.setDaemon(true);
             playbackThread.start();
         } catch (UnsupportedAudioFileException | LineUnavailableException | IOException e) {
@@ -156,6 +159,10 @@ public class SimpleAudioPlayer {
         return volume;
     }
 
+    public Equalizer getEqualizer() {
+        return equalizer;
+    }
+
     public void setOnTrackFinished(Runnable onTrackFinished) {
         this.onTrackFinished = onTrackFinished;
     }
@@ -173,11 +180,11 @@ public class SimpleAudioPlayer {
         try {
             gain.setValue(decibels);
         } catch (IllegalArgumentException ignored) {
-            // Контролер не прийняв значення, залишаємо попередню гучність
+            // Залишаємо попередню гучність
         }
     }
 
-    private void playLoop(SourceDataLine dataLine, AudioInputStream input) {
+    private void playLoop(SourceDataLine dataLine, AudioInputStream input, AudioFormat format) {
         byte[] buffer = new byte[BUFFER_SIZE];
         boolean finishedNaturally = false;
         try {
@@ -191,6 +198,7 @@ public class SimpleAudioPlayer {
                     finishedNaturally = playing;
                     break;
                 }
+                equalizer.process(buffer, read, format);
                 awaitResume();
                 if (!playing) {
                     break;
