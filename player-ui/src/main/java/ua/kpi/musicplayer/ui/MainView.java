@@ -23,6 +23,8 @@ import ua.kpi.musicplayer.memento.PlayerMemento;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
+import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
+import ua.kpi.musicplayer.visitor.SummaryMediaVisitor;
 
 import java.io.File;
 import java.io.IOException;
@@ -43,6 +45,7 @@ public class MainView extends VBox {
             Path.of(System.getProperty("user.home"), "musicplayer-state.properties");
 
     private final MusicPlayerFacade facade;
+    private final MediaInfoVisitor mediaInfoVisitor = new SummaryMediaVisitor();
     private final ListView<Track> trackList = new ListView<>();
     private final ListView<RadioStation> stationList = new ListView<>();
     private final TextField streamUrlField = new TextField();
@@ -157,6 +160,8 @@ public class MainView extends VBox {
                 }
             }
         });
+        trackList.getSelectionModel().selectedItemProperty().addListener(
+                (observable, oldValue, newValue) -> updateTrackInfo(newValue));
         trackList.setOnMouseClicked(event -> {
             int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
             if (event.getClickCount() == 2 && selectedIndex >= 0) {
@@ -184,7 +189,10 @@ public class MainView extends VBox {
             }
         });
         stationList.getSelectionModel().selectedItemProperty().addListener(
-                (observable, oldValue, newValue) -> stationPlayButton.setDisable(newValue == null));
+                (observable, oldValue, newValue) -> {
+                    stationPlayButton.setDisable(newValue == null);
+                    updateStationInfo(newValue);
+                });
         stationList.setOnMouseClicked(event -> {
             if (event.getClickCount() == 2) {
                 playSelectedStation();
@@ -386,34 +394,15 @@ public class MainView extends VBox {
     }
 
     private void updateTrackInfo(Track track) {
-        if (track == null) {
-            trackInfoLabel.setText("Інформація про трек відсутня");
-            return;
-        }
-
-        List<String> parts = new ArrayList<>();
-        if (hasText(track.getArtist())) {
-            parts.add("Виконавець: " + track.getArtist().trim());
-        }
-        parts.add("Назва: " + displayTitle(track));
-        if (hasText(track.getAlbum())) {
-            parts.add("Альбом: " + track.getAlbum().trim());
-        }
-        if (track.getDurationMs() > 0) {
-            parts.add("Тривалість: " + formatDuration(track.getDurationMs()));
-        }
-
-        trackInfoLabel.setText(String.join(" | ", parts));
+        trackInfoLabel.setText(track == null
+                ? "Інформація про трек відсутня"
+                : track.accept(mediaInfoVisitor));
     }
 
-    private String displayTitle(Track track) {
-        if (hasText(track.getTitle())) {
-            return track.getTitle().trim();
+    private void updateStationInfo(RadioStation station) {
+        if (station != null) {
+            trackInfoLabel.setText(station.accept(mediaInfoVisitor));
         }
-        if (hasText(track.getLocation())) {
-            return new File(track.getLocation()).getName();
-        }
-        return "Без назви";
     }
 
     private static boolean hasText(String value) {
@@ -543,7 +532,7 @@ public class MainView extends VBox {
         }
 
         streamUrlField.setText(url);
-        playStream(url);
+        playStream(url, station.accept(mediaInfoVisitor));
     }
 
     private void searchStations() {
@@ -571,6 +560,10 @@ public class MainView extends VBox {
     }
 
     private void playStream(String url) {
+        playStream(url, null);
+    }
+
+    private void playStream(String url, String detail) {
         if (!hasText(url)) {
             statusLabel.setText("Введіть URL аудіопотоку");
             return;
@@ -603,7 +596,9 @@ public class MainView extends VBox {
 
                     pauseButton.setText("Пауза");
                     fileLabel.setText("Потік: " + streamUrl);
-                    trackInfoLabel.setText("Інтернет-потік: " + streamUrl);
+                    trackInfoLabel.setText(detail == null
+                            ? "Інтернет-потік: " + streamUrl
+                            : detail);
                     statusLabel.setText("Відтворення потоку: " + streamUrl);
                 }));
     }

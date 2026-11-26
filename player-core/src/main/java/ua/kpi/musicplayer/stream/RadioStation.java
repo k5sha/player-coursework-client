@@ -1,5 +1,7 @@
 package ua.kpi.musicplayer.stream;
 
+import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
+
 public class RadioStation {
 
     private String name;
@@ -53,6 +55,10 @@ public class RadioStation {
             return urlResolved;
         }
         return url;
+    }
+
+    public String accept(MediaInfoVisitor visitor) {
+        return visitor.visitRadioStation(this);
     }
 
     @Override

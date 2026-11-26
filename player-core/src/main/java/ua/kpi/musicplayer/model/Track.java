@@ -1,5 +1,7 @@
 package ua.kpi.musicplayer.model;
 
+import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
+
 public class Track {
 
     private String title;
@@ -56,6 +58,10 @@ public class Track {
 
     public void setLocation(String location) {
         this.location = location;
+    }
+
+    public String accept(MediaInfoVisitor visitor) {
+        return visitor.visitTrack(this);
     }
 
     @Override
