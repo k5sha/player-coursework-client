@@ -88,69 +88,32 @@ public class PlaybackQueue {
     }
 
     public void next() {
-        if (!hasNext()) {
+        QueueTrackIterator iterator = createIterator();
+        if (!iterator.hasNext()) {
             return;
         }
-
-        if (shuffle && tracks.size() > 1) {
-            currentIndex = randomOtherIndex();
-        } else if (repeatMode == RepeatMode.ONE) {
-            // Поточний трек повторюється індекс не змінюється
-        } else if (currentIndex >= tracks.size() - 1) {
-            currentIndex = 0;
-        } else {
-            currentIndex++;
-        }
+        iterator.next();
+        currentIndex = iterator.getCurrentIndex();
     }
 
     public void previous() {
-        if (!hasPrevious()) {
+        QueueTrackIterator iterator = createIterator();
+        if (!iterator.hasPrevious()) {
             return;
         }
-
-        if (shuffle && tracks.size() > 1) {
-            currentIndex = randomOtherIndex();
-        } else if (currentIndex <= 0) {
-            currentIndex = tracks.size() - 1;
-        } else {
-            currentIndex--;
-        }
+        iterator.previous();
+        currentIndex = iterator.getCurrentIndex();
     }
 
     public boolean hasNext() {
-        if (currentIndex < 0 || currentIndex >= tracks.size()) {
-            return false;
-        }
-        if (repeatMode == RepeatMode.ONE) {
-            return true;
-        }
-        if (shuffle) {
-            return tracks.size() > 1;
-        }
-        if (repeatMode == RepeatMode.ALL) {
-            return true;
-        }
-        return currentIndex < tracks.size() - 1;
+        return createIterator().hasNext();
     }
 
     public boolean hasPrevious() {
-        if (currentIndex < 0 || currentIndex >= tracks.size()) {
-            return false;
-        }
-        if (shuffle) {
-            return tracks.size() > 1;
-        }
-        if (repeatMode == RepeatMode.ALL) {
-            return true;
-        }
-        return currentIndex > 0;
+        return createIterator().hasPrevious();
     }
 
-    private int randomOtherIndex() {
-        int index;
-        do {
-            index = random.nextInt(tracks.size());
-        } while (index == currentIndex);
-        return index;
+    private QueueTrackIterator createIterator() {
+        return new QueueTrackIterator(tracks, currentIndex, repeatMode, shuffle, random);
     }
 }
