@@ -8,11 +8,12 @@ import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 public class MusicPlayerApplication extends Application {
 
     private SimpleAudioPlayer player;
+    private MainView view;
 
     @Override
     public void start(Stage stage) {
         player = new SimpleAudioPlayer();
-        MainView view = new MainView(player);
+        view = new MainView(player);
 
         stage.setTitle("Music Player");
         stage.setScene(new Scene(view, 480, 200));
@@ -21,6 +22,9 @@ public class MusicPlayerApplication extends Application {
 
     @Override
     public void stop() {
+        if (view != null) {
+            view.saveTracks();
+        }
         if (player != null) {
             player.stop();
         }

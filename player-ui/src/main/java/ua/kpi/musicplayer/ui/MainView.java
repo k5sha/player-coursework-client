@@ -17,6 +17,7 @@ import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
+import ua.kpi.musicplayer.storage.TrackStorage;
 
 import java.io.File;
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ public class MainView extends VBox {
             "-fx-font-weight: bold; -fx-text-fill: #1565c0;";
 
     private final SimpleAudioPlayer player;
+    private final TrackStorage storage = new TrackStorage();
     private final PlaybackQueue queue = new PlaybackQueue();
     private final ListView<Track> trackList = new ListView<>();
     private final Label fileLabel = new Label("Файл не обрано");
@@ -143,6 +145,33 @@ public class MainView extends VBox {
                 trackInfoLabel,
                 fileLabel,
                 statusLabel);
+
+        loadSavedTracks();
+    }
+
+    private void loadSavedTracks() {
+        try {
+            List<Track> savedTracks = storage.loadTracks();
+            if (savedTracks.isEmpty()) {
+                return;
+            }
+
+            queue.addTracks(savedTracks);
+            trackList.getItems().setAll(queue.getTracks());
+            trackList.getSelectionModel().select(queue.getCurrentIndex());
+            updateTrackInfo(queue.getCurrentTrack());
+            statusLabel.setText("Завантажено збережених треків: " + savedTracks.size());
+        } catch (RuntimeException e) {
+            statusLabel.setText("Не вдалося завантажити треки: " + e.getMessage());
+        }
+    }
+
+    public void saveTracks() {
+        try {
+            storage.saveTracks(queue.getTracks());
+        } catch (RuntimeException e) {
+            statusLabel.setText("Не вдалося зберегти треки: " + e.getMessage());
+        }
     }
 
     private Slider createEqSlider(int band) {
@@ -185,6 +214,7 @@ public class MainView extends VBox {
         updateTrackInfo(queue.getCurrentTrack());
         fileLabel.setText("Додано треків: " + addedTracks.size());
         statusLabel.setText("У списку треків: " + queue.getTracks().size());
+        saveTracks();
     }
 
     private void updateTrackInfo(Track track) {
