@@ -30,6 +30,22 @@ public class PlaybackQueue {
         }
     }
 
+    public Track removeAt(int index) {
+        if (index < 0 || index >= tracks.size()) {
+            return null;
+        }
+
+        Track removed = tracks.remove(index);
+        if (tracks.isEmpty()) {
+            currentIndex = -1;
+        } else if (index < currentIndex) {
+            currentIndex--;
+        } else if (index == currentIndex && currentIndex >= tracks.size()) {
+            currentIndex = tracks.size() - 1;
+        }
+        return removed;
+    }
+
     public void clear() {
         tracks.clear();
         currentIndex = -1;

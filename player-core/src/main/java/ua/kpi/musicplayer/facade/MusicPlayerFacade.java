@@ -79,6 +79,23 @@ public class MusicPlayerFacade {
         notifyObservers();
     }
 
+    public Track removeTrackAt(int index) {
+        boolean removeCurrent = index == queue.getCurrentIndex();
+        Track removed = queue.removeAt(index);
+        if (removed == null) {
+            return null;
+        }
+
+        if (removeCurrent) {
+            currentStreamUrl = null;
+            player.stop();
+        }
+
+        storage.saveTracks(queue.getTracks());
+        notifyObservers();
+        return removed;
+    }
+
     public Track playTrackAt(int index) {
         queue.select(index);
         return playCurrentTrack();

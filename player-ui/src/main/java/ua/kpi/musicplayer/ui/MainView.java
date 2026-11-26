@@ -94,6 +94,9 @@ public class MainView extends VBox {
         Button nextButton = new Button("Наступний");
         nextButton.setOnAction(event -> playNext());
 
+        Button removeButton = new Button("Видалити трек");
+        removeButton.setOnAction(event -> removeSelectedTrack());
+
         pauseButton.setOnAction(event -> togglePause());
 
         repeatButton.setOnAction(event -> {
@@ -219,7 +222,8 @@ public class MainView extends VBox {
         });
 
         getChildren().addAll(
-                new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
+                new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton,
+                        removeButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
                 new HBox(8, new Label("Позиція:"), seekSlider, seekTimeLabel),
                 new HBox(8, new Label("Еквалайзер:"), equalizerPresetBox, resetEqualizerButton),
@@ -393,6 +397,34 @@ public class MainView extends VBox {
         statusLabel.setText("У списку треків: " + facade.getTracks().size());
         if (saveError != null) {
             statusLabel.setText(saveError);
+        }
+    }
+
+    private void removeSelectedTrack() {
+        int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
+        if (selectedIndex < 0) {
+            statusLabel.setText("Оберіть трек для видалення");
+            return;
+        }
+
+        try {
+            Track removed = facade.removeTrackAt(selectedIndex);
+            if (removed == null) {
+                statusLabel.setText("Не вдалося видалити трек");
+                return;
+            }
+
+            trackList.getItems().setAll(facade.getTracks());
+            if (!trackList.getItems().isEmpty()) {
+                trackList.getSelectionModel().select(
+                        Math.min(selectedIndex, trackList.getItems().size() - 1));
+            }
+            trackList.refresh();
+            updateTrackInfo(trackList.getSelectionModel().getSelectedItem());
+            fileLabel.setText("Видалено трек: " + removed);
+            statusLabel.setText("У списку треків: " + facade.getTracks().size());
+        } catch (RuntimeException e) {
+            statusLabel.setText("Помилка видалення: " + e.getMessage());
         }
     }
 
