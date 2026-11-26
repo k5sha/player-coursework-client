@@ -16,7 +16,10 @@ public class MusicPlayerApplication extends Application {
         view = new MainView(player);
 
         stage.setTitle("Music Player");
-        stage.setScene(new Scene(view, 480, 200));
+        stage.setScene(new Scene(view));
+        stage.sizeToScene();
+        stage.setMinWidth(stage.getWidth());
+        stage.setMinHeight(stage.getHeight());
         stage.show();
     }
 
