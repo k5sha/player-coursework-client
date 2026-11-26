@@ -12,6 +12,7 @@ import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.Slider;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
@@ -20,6 +21,7 @@ import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.facade.MusicPlayerFacade;
 import ua.kpi.musicplayer.memento.PlayerMemento;
+import ua.kpi.musicplayer.model.Playlist;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.observer.PlayerState;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
@@ -35,6 +37,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
@@ -61,6 +64,8 @@ public class MainView extends VBox {
     private final Button stationSearchButton = new Button("Знайти");
     private final Button stationPlayButton = new Button("Обрану станцію");
     private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
+    private final ComboBox<Playlist> playlistBox = new ComboBox<>();
+    private final Button deletePlaylistButton = new Button("Видалити плейлист");
     private final Slider seekSlider = new Slider(0, 1, 0);
     private final Label seekTimeLabel = new Label("00:00 / 00:00");
     private final Timeline seekTimeline =
@@ -70,6 +75,7 @@ public class MainView extends VBox {
     private Slider midEqSlider;
     private Slider highEqSlider;
     private boolean updatingSeekSlider;
+    private boolean updatingPlaylistBox;
     private long streamRequest;
 
     public MainView(MusicPlayerFacade facade) {
@@ -149,6 +155,14 @@ public class MainView extends VBox {
             updateEqualizerControls();
             statusLabel.setText("Еквалайзер скинуто");
         });
+
+        playlistBox.setPrefWidth(220);
+        playlistBox.setOnAction(event -> switchPlaylist());
+
+        Button createPlaylistButton = new Button("Новий плейлист");
+        createPlaylistButton.setOnAction(event -> createPlaylist());
+
+        deletePlaylistButton.setOnAction(event -> deletePlaylist());
 
         trackList.setPrefHeight(220);
         trackList.setCellFactory(list -> new ListCell<>() {
@@ -234,6 +248,7 @@ public class MainView extends VBox {
                 new HBox(8, new Label("URL потоку:"), streamUrlField, streamPlayButton),
                 new HBox(8, new Label("Radio Browser:"), stationSearchField, stationSearchButton, stationPlayButton),
                 stationList,
+                new HBox(8, new Label("Плейлист:"), playlistBox, createPlaylistButton, deletePlaylistButton),
                 trackList,
                 trackInfoLabel,
                 fileLabel,
@@ -248,18 +263,142 @@ public class MainView extends VBox {
     private void loadSavedTracks() {
         try {
             List<Track> savedTracks = facade.loadSavedTracks();
-            restoreSavedPlayerState();
-            if (savedTracks.isEmpty()) {
-                return;
+            List<Playlist> playlists = facade.loadPlaylists();
+
+            updatingPlaylistBox = true;
+            try {
+                playlistBox.getItems().setAll(playlists);
+                playlistBox.setValue(findPlaylist(playlists, facade.getActivePlaylistId()));
+            } finally {
+                updatingPlaylistBox = false;
             }
+            updatePlaylistControls();
+
+            restoreSavedPlayerState();
 
             trackList.getItems().setAll(facade.getTracks());
-            trackList.getSelectionModel().select(facade.getCurrentIndex());
+            if (!trackList.getItems().isEmpty()) {
+                trackList.getSelectionModel().select(Math.max(facade.getCurrentIndex(), 0));
+            }
             updateTrackInfo(facade.getCurrentTrack());
-            statusLabel.setText("Завантажено збережених треків: " + savedTracks.size());
+
+            Playlist active = playlistBox.getValue();
+            String playlistName = active == null ? "плейлист" : active.getName();
+            statusLabel.setText(savedTracks.isEmpty()
+                    ? "Плейлист \"" + playlistName + "\" порожній"
+                    : "Плейлист \"" + playlistName + "\": треків " + savedTracks.size());
         } catch (RuntimeException e) {
             statusLabel.setText("Не вдалося завантажити треки: " + e.getMessage());
         }
+    }
+
+    private static Playlist findPlaylist(List<Playlist> playlists, long playlistId) {
+        for (Playlist playlist : playlists) {
+            if (playlist.getId() == playlistId) {
+                return playlist;
+            }
+        }
+        return playlists.isEmpty() ? null : playlists.get(0);
+    }
+
+    private void switchPlaylist() {
+        if (updatingPlaylistBox) {
+            return;
+        }
+
+        Playlist selected = playlistBox.getValue();
+        if (selected == null || selected.getId() == facade.getActivePlaylistId()) {
+            return;
+        }
+
+        try {
+            facade.switchPlaylist(selected.getId());
+            refreshTrackList();
+            updateTrackInfo(facade.getCurrentTrack());
+            fileLabel.setText("Плейлист: " + selected.getName());
+            statusLabel.setText("Плейлист \"" + selected.getName() + "\": треків "
+                    + facade.getTracks().size());
+        } catch (RuntimeException e) {
+            statusLabel.setText("Не вдалося перемкнути плейлист: " + e.getMessage());
+        }
+    }
+
+    private void createPlaylist() {
+        TextInputDialog dialog = new TextInputDialog("Новий плейлист");
+        dialog.setTitle("Створення плейлиста");
+        dialog.setHeaderText("Введіть назву нового плейлиста");
+        dialog.setContentText("Назва:");
+
+        Optional<String> result = dialog.showAndWait();
+        if (result.isEmpty() || result.get().isBlank()) {
+            return;
+        }
+
+        try {
+            Playlist playlist = facade.createPlaylist(result.get());
+            playlistBox.getItems().add(playlist);
+            updatingPlaylistBox = true;
+            try {
+                playlistBox.setValue(playlist);
+            } finally {
+                updatingPlaylistBox = false;
+            }
+
+            facade.switchPlaylist(playlist.getId());
+            refreshTrackList();
+            updateTrackInfo(null);
+            fileLabel.setText("Плейлист: " + playlist.getName());
+            statusLabel.setText("Створено плейлист: " + playlist.getName());
+            updatePlaylistControls();
+        } catch (RuntimeException e) {
+            statusLabel.setText("Не вдалося створити плейлист: " + e.getMessage());
+        }
+    }
+
+    private void deletePlaylist() {
+        Playlist selected = playlistBox.getValue();
+        if (selected == null) {
+            statusLabel.setText("Оберіть плейлист для видалення");
+            return;
+        }
+        if (playlistBox.getItems().size() <= 1) {
+            statusLabel.setText("Не можна видалити єдиний плейлист");
+            return;
+        }
+
+        try {
+            facade.deletePlaylist(selected.getId());
+            playlistBox.getItems().remove(selected);
+            updatingPlaylistBox = true;
+            try {
+                playlistBox.setValue(findPlaylist(
+                        playlistBox.getItems(), facade.getActivePlaylistId()));
+            } finally {
+                updatingPlaylistBox = false;
+            }
+
+            refreshTrackList();
+            updateTrackInfo(facade.getCurrentTrack());
+            Playlist active = playlistBox.getValue();
+            fileLabel.setText(active == null ? "Файл не обрано" : "Плейлист: " + active.getName());
+            statusLabel.setText("Видалено плейлист: " + selected.getName());
+            updatePlaylistControls();
+        } catch (RuntimeException e) {
+            statusLabel.setText("Не вдалося видалити плейлист: " + e.getMessage());
+        }
+    }
+
+    private void refreshTrackList() {
+        trackList.getItems().setAll(facade.getTracks());
+        if (!trackList.getItems().isEmpty()) {
+            trackList.getSelectionModel().select(Math.max(facade.getCurrentIndex(), 0));
+        }
+        trackList.refresh();
+    }
+
+    private void updatePlaylistControls() {
+        playlistBox.setDisable(playlistBox.getItems().isEmpty());
+        deletePlaylistButton.setDisable(playlistBox.getItems().size() <= 1);
     }
 
     private void savePlayerState() {
