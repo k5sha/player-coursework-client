@@ -3,17 +3,16 @@ package ua.kpi.musicplayer.ui;
 import javafx.application.Application;
 import javafx.scene.Scene;
 import javafx.stage.Stage;
-import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
+import ua.kpi.musicplayer.facade.MusicPlayerFacade;
 
 public class MusicPlayerApplication extends Application {
 
-    private SimpleAudioPlayer player;
-    private MainView view;
+    private MusicPlayerFacade facade;
 
     @Override
     public void start(Stage stage) {
-        player = new SimpleAudioPlayer();
-        view = new MainView(player);
+        facade = new MusicPlayerFacade();
+        MainView view = new MainView(facade);
 
         stage.setTitle("Music Player");
         stage.setScene(new Scene(view));
@@ -25,11 +24,8 @@ public class MusicPlayerApplication extends Application {
 
     @Override
     public void stop() {
-        if (view != null) {
-            view.saveTracks();
-        }
-        if (player != null) {
-            player.stop();
+        if (facade != null) {
+            facade.stop();
         }
     }
 

@@ -15,11 +15,8 @@ import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.Equalizer;
-import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
+import ua.kpi.musicplayer.facade.MusicPlayerFacade;
 import ua.kpi.musicplayer.model.Track;
-import ua.kpi.musicplayer.playback.PlaybackQueue;
-import ua.kpi.musicplayer.storage.TrackStorage;
-import ua.kpi.musicplayer.stream.RadioBrowserClient;
 import ua.kpi.musicplayer.stream.RadioStation;
 
 import java.io.File;
@@ -32,10 +29,7 @@ public class MainView extends VBox {
     private static final String CURRENT_TRACK_STYLE =
             "-fx-font-weight: bold; -fx-text-fill: #1565c0;";
 
-    private final SimpleAudioPlayer player;
-    private final TrackStorage storage = new TrackStorage();
-    private final PlaybackQueue queue = new PlaybackQueue();
-    private final RadioBrowserClient radioBrowserClient = new RadioBrowserClient();
+    private final MusicPlayerFacade facade;
     private final ListView<Track> trackList = new ListView<>();
     private final ListView<RadioStation> stationList = new ListView<>();
     private final TextField streamUrlField = new TextField();
@@ -54,10 +48,9 @@ public class MainView extends VBox {
     private Slider midEqSlider;
     private Slider highEqSlider;
     private long streamRequest;
-    private String currentStreamUrl;
 
-    public MainView(SimpleAudioPlayer player) {
-        this.player = player;
+    public MainView(MusicPlayerFacade facade) {
+        this.facade = facade;
 
         setSpacing(12);
         setPadding(new Insets(16));
@@ -81,21 +74,21 @@ public class MainView extends VBox {
         pauseButton.setOnAction(event -> togglePause());
 
         repeatButton.setOnAction(event -> {
-            queue.cycleRepeatMode();
+            facade.cycleRepeatMode();
             updateModeControls();
             statusLabel.setText("Режим повтору: " + repeatModeText());
         });
 
         shuffleButton.setOnAction(event -> {
-            queue.toggleShuffle();
+            facade.toggleShuffle();
             updateModeControls();
-            statusLabel.setText("Перемішування: " + (queue.isShuffle() ? "увімкнено" : "вимкнено"));
+            statusLabel.setText("Перемішування: " + (facade.isShuffle() ? "увімкнено" : "вимкнено"));
         });
 
-        Slider volumeSlider = new Slider(0, 100, player.getVolume() * 100);
+        Slider volumeSlider = new Slider(0, 100, facade.getVolume() * 100);
         volumeSlider.setPrefWidth(180);
         volumeSlider.valueProperty().addListener((observable, oldValue, newValue) ->
-                player.setVolume(newValue.floatValue() / 100.0f));
+                facade.setVolume(newValue.floatValue() / 100.0f));
 
         lowEqSlider = createEqSlider(Equalizer.LOW_BAND);
         midEqSlider = createEqSlider(Equalizer.MID_BAND);
@@ -108,14 +101,14 @@ public class MainView extends VBox {
             if (preset == null) {
                 return;
             }
-            player.getEqualizer().applyPreset(preset);
+            facade.applyEqualizerPreset(preset);
             updateEqualizerControls();
             statusLabel.setText("Еквалайзер: " + preset.getDisplayName());
         });
 
         Button resetEqualizerButton = new Button("Скинути");
         resetEqualizerButton.setOnAction(event -> {
-            player.getEqualizer().reset();
+            facade.resetEqualizer();
             equalizerPresetBox.setValue(Equalizer.Preset.FLAT);
             updateEqualizerControls();
             statusLabel.setText("Еквалайзер скинуто");
@@ -131,7 +124,7 @@ public class MainView extends VBox {
                     setStyle("");
                 } else {
                     setText(track.toString());
-                    setStyle(getIndex() == queue.getCurrentIndex() ? CURRENT_TRACK_STYLE : "");
+                    setStyle(getIndex() == facade.getCurrentIndex() ? CURRENT_TRACK_STYLE : "");
                 }
             }
         });
@@ -169,7 +162,8 @@ public class MainView extends VBox {
             }
         });
 
-        player.setOnTrackFinished(() -> Platform.runLater(this::onTrackFinished));
+        facade.setOnTrackFinished(streamFinished ->
+                Platform.runLater(() -> onTrackFinished(streamFinished)));
 
         updateModeControls();
 
@@ -194,43 +188,34 @@ public class MainView extends VBox {
 
     private void loadSavedTracks() {
         try {
-            List<Track> savedTracks = storage.loadTracks();
+            List<Track> savedTracks = facade.loadSavedTracks();
             if (savedTracks.isEmpty()) {
                 return;
             }
 
-            queue.addTracks(savedTracks);
-            trackList.getItems().setAll(queue.getTracks());
-            trackList.getSelectionModel().select(queue.getCurrentIndex());
-            updateTrackInfo(queue.getCurrentTrack());
+            trackList.getItems().setAll(facade.getTracks());
+            trackList.getSelectionModel().select(facade.getCurrentIndex());
+            updateTrackInfo(facade.getCurrentTrack());
             statusLabel.setText("Завантажено збережених треків: " + savedTracks.size());
         } catch (RuntimeException e) {
             statusLabel.setText("Не вдалося завантажити треки: " + e.getMessage());
         }
     }
 
-    public void saveTracks() {
-        try {
-            storage.saveTracks(queue.getTracks());
-        } catch (RuntimeException e) {
-            statusLabel.setText("Не вдалося зберегти треки: " + e.getMessage());
-        }
-    }
-
     private Slider createEqSlider(int band) {
         Slider slider = new Slider(Equalizer.MIN_GAIN_DB, Equalizer.MAX_GAIN_DB,
-                player.getEqualizer().getBandGainDb(band));
+                facade.getBandGainDb(band));
         slider.setPrefWidth(160);
         slider.setBlockIncrement(1);
         slider.valueProperty().addListener((observable, oldValue, newValue) ->
-                player.getEqualizer().setBandGainDb(band, newValue.floatValue()));
+                facade.setBandGainDb(band, newValue.floatValue()));
         return slider;
     }
 
     private void updateEqualizerControls() {
-        lowEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.LOW_BAND));
-        midEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.MID_BAND));
-        highEqSlider.setValue(player.getEqualizer().getBandGainDb(Equalizer.HIGH_BAND));
+        lowEqSlider.setValue(facade.getBandGainDb(Equalizer.LOW_BAND));
+        midEqSlider.setValue(facade.getBandGainDb(Equalizer.MID_BAND));
+        highEqSlider.setValue(facade.getBandGainDb(Equalizer.HIGH_BAND));
     }
 
     private void chooseFiles() {
@@ -249,15 +234,23 @@ public class MainView extends VBox {
             addedTracks.add(AudioMetadataReader.read(file));
         }
 
-        queue.addTracks(addedTracks);
-        trackList.getItems().setAll(queue.getTracks());
-        trackList.getSelectionModel().select(queue.getCurrentIndex());
+        String saveError = null;
+        try {
+            facade.addTracksAndSave(addedTracks);
+        } catch (RuntimeException e) {
+            saveError = "Не вдалося зберегти треки: " + e.getMessage();
+        }
+
+        trackList.getItems().setAll(facade.getTracks());
+        trackList.getSelectionModel().select(facade.getCurrentIndex());
         trackList.refresh();
 
-        updateTrackInfo(queue.getCurrentTrack());
+        updateTrackInfo(facade.getCurrentTrack());
         fileLabel.setText("Додано треків: " + addedTracks.size());
-        statusLabel.setText("У списку треків: " + queue.getTracks().size());
-        saveTracks();
+        statusLabel.setText("У списку треків: " + facade.getTracks().size());
+        if (saveError != null) {
+            statusLabel.setText(saveError);
+        }
     }
 
     private void updateTrackInfo(Track track) {
@@ -302,11 +295,11 @@ public class MainView extends VBox {
 
     private void updateModeControls() {
         repeatButton.setText("Повтор: " + repeatModeText());
-        shuffleButton.setText("Перемішування: " + (queue.isShuffle() ? "увімк." : "вимк."));
+        shuffleButton.setText("Перемішування: " + (facade.isShuffle() ? "увімк." : "вимк."));
     }
 
     private String repeatModeText() {
-        switch (queue.getRepeatMode()) {
+        switch (facade.getRepeatMode()) {
             case ALL:
                 return "усі";
             case ONE:
@@ -317,81 +310,87 @@ public class MainView extends VBox {
     }
 
     private void play() {
-        if (queue.getTracks().isEmpty()) {
+        if (facade.getTracks().isEmpty()) {
             statusLabel.setText("Спочатку оберіть файли");
             return;
         }
 
         int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
-        playTrack(selectedIndex >= 0 ? selectedIndex : queue.getCurrentIndex());
+        playTrack(selectedIndex >= 0 ? selectedIndex : facade.getCurrentIndex());
     }
 
     private void playTrack(int index) {
-        queue.select(index);
-        Track track = queue.getCurrentTrack();
-        if (track == null) {
-            statusLabel.setText("Спочатку оберіть файли");
-            return;
-        }
-
-        currentStreamUrl = null;
         try {
-            player.play(track);
-            pauseButton.setText("Пауза");
-            updateTrackInfo(track);
-            fileLabel.setText("Поточний трек: " + track);
-            statusLabel.setText("Відтворення: " + track);
-            trackList.getSelectionModel().select(index);
-            trackList.refresh();
+            Track track = facade.playTrackAt(index);
+            if (track == null) {
+                statusLabel.setText("Спочатку оберіть файли");
+                return;
+            }
+            showPlayingTrack(track);
         } catch (RuntimeException e) {
             statusLabel.setText("Помилка: " + e.getMessage());
         }
     }
 
-    private void playNext() {
-        if (!queue.hasNext()) {
-            statusLabel.setText("Наступного треку немає");
-            return;
-        }
+    private void showPlayingTrack(Track track) {
+        pauseButton.setText("Пауза");
+        updateTrackInfo(track);
+        fileLabel.setText("Поточний трек: " + track);
+        statusLabel.setText("Відтворення: " + track);
+        trackList.getSelectionModel().select(facade.getCurrentIndex());
+        trackList.refresh();
+    }
 
-        queue.next();
-        playTrack(queue.getCurrentIndex());
+    private void playNext() {
+        try {
+            Track track = facade.playNext();
+            if (track == null) {
+                statusLabel.setText("Наступного треку немає");
+                return;
+            }
+            showPlayingTrack(track);
+        } catch (RuntimeException e) {
+            statusLabel.setText("Помилка: " + e.getMessage());
+        }
     }
 
     private void playPrevious() {
-        if (!queue.hasPrevious()) {
-            statusLabel.setText("Попереднього треку немає");
-            return;
+        try {
+            Track track = facade.playPrevious();
+            if (track == null) {
+                statusLabel.setText("Попереднього треку немає");
+                return;
+            }
+            showPlayingTrack(track);
+        } catch (RuntimeException e) {
+            statusLabel.setText("Помилка: " + e.getMessage());
         }
-
-        queue.previous();
-        playTrack(queue.getCurrentIndex());
     }
 
     private void togglePause() {
-        if (!player.isPlaying()) {
+        if (!facade.isPlaying()) {
             statusLabel.setText("Зараз нічого не відтворюється");
             return;
         }
 
-        player.togglePause();
-        if (player.isPaused()) {
+        facade.togglePause();
+        if (facade.isPaused()) {
             pauseButton.setText("Продовжити");
             statusLabel.setText("Пауза");
         } else {
             pauseButton.setText("Пауза");
-            if (currentStreamUrl != null) {
-                statusLabel.setText("Відтворення потоку: " + currentStreamUrl);
+            String streamUrl = facade.getCurrentStreamUrl();
+            if (streamUrl != null) {
+                statusLabel.setText("Відтворення потоку: " + streamUrl);
             } else {
-                Track track = queue.getCurrentTrack();
+                Track track = facade.getCurrentTrack();
                 statusLabel.setText(track == null ? "Відтворення" : "Відтворення: " + track);
             }
         }
     }
 
     private void stop() {
-        currentStreamUrl = null;
-        player.stop();
+        facade.stop();
         pauseButton.setText("Пауза");
         statusLabel.setText("Зупинено");
     }
@@ -422,7 +421,7 @@ public class MainView extends VBox {
 
         stationSearchButton.setDisable(true);
         statusLabel.setText("Пошук станцій Radio Browser...");
-        CompletableFuture.supplyAsync(() -> radioBrowserClient.search(query))
+        CompletableFuture.supplyAsync(() -> facade.searchStations(query))
                 .whenComplete((stations, error) -> Platform.runLater(() -> {
                     stationSearchButton.setDisable(false);
                     if (error != null) {
@@ -445,12 +444,11 @@ public class MainView extends VBox {
 
         String streamUrl = url.trim();
         long request = ++streamRequest;
-        currentStreamUrl = null;
         streamPlayButton.setDisable(true);
         stationPlayButton.setDisable(true);
         statusLabel.setText("Підключення до потоку...");
 
-        CompletableFuture.supplyAsync(() -> player.playUrl(streamUrl))
+        CompletableFuture.supplyAsync(() -> facade.playStream(streamUrl))
                 .whenComplete((started, error) -> Platform.runLater(() -> {
                     if (request != streamRequest) {
                         return;
@@ -467,7 +465,6 @@ public class MainView extends VBox {
                         return;
                     }
 
-                    currentStreamUrl = streamUrl;
                     pauseButton.setText("Пауза");
                     fileLabel.setText("Потік: " + streamUrl);
                     trackInfoLabel.setText("Інтернет-потік: " + streamUrl);
@@ -480,17 +477,16 @@ public class MainView extends VBox {
         return hasText(cause.getMessage()) ? cause.getMessage() : cause.toString();
     }
 
-    private void onTrackFinished() {
-        boolean streamFinished = currentStreamUrl != null;
-        currentStreamUrl = null;
+    private void onTrackFinished(boolean streamFinished) {
         pauseButton.setText("Пауза");
         if (streamFinished) {
             statusLabel.setText("Потік завершено");
             return;
         }
-        if (queue.hasNext()) {
-            queue.next();
-            playTrack(queue.getCurrentIndex());
+
+        Track track = facade.getCurrentTrack();
+        if (facade.isPlaying() && track != null) {
+            showPlayingTrack(track);
         } else {
             statusLabel.setText("Відтворення завершено");
             trackList.refresh();
