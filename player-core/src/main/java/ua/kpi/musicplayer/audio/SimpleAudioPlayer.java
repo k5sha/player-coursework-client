@@ -81,7 +81,7 @@ public class SimpleAudioPlayer {
                 currentLine.flush();
             }
         } catch (IllegalStateException ignored) {
-            // Лінію вже закрито потоком відтворення.
+            // Лінію вже закрито потоком відтворення
         }
 
         Thread thread = playbackThread;
@@ -107,7 +107,7 @@ public class SimpleAudioPlayer {
                 currentLine.stop();
             }
         } catch (IllegalStateException ignored) {
-            // Лінію вже закрито потоком відтворення.
+            // Лінію вже закрито потоком відтворення
         }
     }
 
@@ -127,7 +127,7 @@ public class SimpleAudioPlayer {
                 currentLine.start();
             }
         } catch (IllegalStateException ignored) {
-            // Лінію вже закрито потоком відтворення.
+            // Лінію вже закрито потоком відтворення
         }
     }
 
@@ -173,7 +173,7 @@ public class SimpleAudioPlayer {
         try {
             gain.setValue(decibels);
         } catch (IllegalArgumentException ignored) {
-            // Контролер не прийняв значення — залишаємо попередню гучність.
+            // Контролер не прийняв значення, залишаємо попередню гучність
         }
     }
 
@@ -201,7 +201,7 @@ public class SimpleAudioPlayer {
                 dataLine.drain();
             }
         } catch (IOException | IllegalStateException ignored) {
-            // Відтворення зупинено викликом stop().
+            // Відтворення зупинено викликом stop()
         } finally {
             playing = false;
             paused = false;

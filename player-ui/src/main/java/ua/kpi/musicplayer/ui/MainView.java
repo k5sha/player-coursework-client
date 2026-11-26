@@ -11,6 +11,7 @@ import javafx.scene.control.Slider;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
+import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
@@ -28,6 +29,7 @@ public class MainView extends VBox {
     private final PlaybackQueue queue = new PlaybackQueue();
     private final ListView<Track> trackList = new ListView<>();
     private final Label fileLabel = new Label("Файл не обрано");
+    private final Label trackInfoLabel = new Label("Інформація про трек відсутня");
     private final Label statusLabel = new Label("Готово до роботи");
     private final Button pauseButton = new Button("Пауза");
 
@@ -87,6 +89,7 @@ public class MainView extends VBox {
                 new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
                 trackList,
+                trackInfoLabel,
                 fileLabel,
                 statusLabel);
     }
@@ -104,7 +107,7 @@ public class MainView extends VBox {
 
         List<Track> addedTracks = new ArrayList<>();
         for (File file : files) {
-            addedTracks.add(new Track(file.getName(), null, 0, file.getAbsolutePath()));
+            addedTracks.add(AudioMetadataReader.read(file));
         }
 
         queue.addTracks(addedTracks);
@@ -112,8 +115,49 @@ public class MainView extends VBox {
         trackList.getSelectionModel().select(queue.getCurrentIndex());
         trackList.refresh();
 
+        updateTrackInfo(queue.getCurrentTrack());
         fileLabel.setText("Додано треків: " + addedTracks.size());
         statusLabel.setText("У списку треків: " + queue.getTracks().size());
+    }
+
+    private void updateTrackInfo(Track track) {
+        if (track == null) {
+            trackInfoLabel.setText("Інформація про трек відсутня");
+            return;
+        }
+
+        List<String> parts = new ArrayList<>();
+        if (hasText(track.getArtist())) {
+            parts.add("Виконавець: " + track.getArtist().trim());
+        }
+        parts.add("Назва: " + displayTitle(track));
+        if (hasText(track.getAlbum())) {
+            parts.add("Альбом: " + track.getAlbum().trim());
+        }
+        if (track.getDurationMs() > 0) {
+            parts.add("Тривалість: " + formatDuration(track.getDurationMs()));
+        }
+
+        trackInfoLabel.setText(String.join(" | ", parts));
+    }
+
+    private String displayTitle(Track track) {
+        if (hasText(track.getTitle())) {
+            return track.getTitle().trim();
+        }
+        if (hasText(track.getLocation())) {
+            return new File(track.getLocation()).getName();
+        }
+        return "Без назви";
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private static String formatDuration(long durationMs) {
+        long totalSeconds = durationMs / 1000;
+        return String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60);
     }
 
     private void play() {
@@ -137,6 +181,7 @@ public class MainView extends VBox {
         try {
             player.play(track);
             pauseButton.setText("Пауза");
+            updateTrackInfo(track);
             fileLabel.setText("Поточний трек: " + track);
             statusLabel.setText("Відтворення: " + track);
             trackList.getSelectionModel().select(index);
