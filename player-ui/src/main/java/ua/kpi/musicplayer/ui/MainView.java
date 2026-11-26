@@ -9,6 +9,7 @@ import javafx.scene.control.Label;
 import javafx.scene.control.ListCell;
 import javafx.scene.control.ListView;
 import javafx.scene.control.Slider;
+import javafx.scene.control.TextField;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
@@ -18,10 +19,13 @@ import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.storage.TrackStorage;
+import ua.kpi.musicplayer.stream.RadioBrowserClient;
+import ua.kpi.musicplayer.stream.RadioStation;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 public class MainView extends VBox {
 
@@ -31,17 +35,26 @@ public class MainView extends VBox {
     private final SimpleAudioPlayer player;
     private final TrackStorage storage = new TrackStorage();
     private final PlaybackQueue queue = new PlaybackQueue();
+    private final RadioBrowserClient radioBrowserClient = new RadioBrowserClient();
     private final ListView<Track> trackList = new ListView<>();
+    private final ListView<RadioStation> stationList = new ListView<>();
+    private final TextField streamUrlField = new TextField();
+    private final TextField stationSearchField = new TextField();
     private final Label fileLabel = new Label("Файл не обрано");
     private final Label trackInfoLabel = new Label("Інформація про трек відсутня");
     private final Label statusLabel = new Label("Готово до роботи");
     private final Button pauseButton = new Button("Пауза");
     private final Button repeatButton = new Button();
     private final Button shuffleButton = new Button();
+    private final Button streamPlayButton = new Button("Відтворити потік");
+    private final Button stationSearchButton = new Button("Знайти");
+    private final Button stationPlayButton = new Button("Обрану станцію");
     private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
     private Slider lowEqSlider;
     private Slider midEqSlider;
     private Slider highEqSlider;
+    private long streamRequest;
+    private String currentStreamUrl;
 
     public MainView(SimpleAudioPlayer player) {
         this.player = player;
@@ -129,6 +142,33 @@ public class MainView extends VBox {
             }
         });
 
+        streamUrlField.setPromptText("URL аудіопотоку");
+        streamUrlField.setPrefWidth(320);
+        streamPlayButton.setOnAction(event -> playStream(streamUrlField.getText()));
+
+        stationSearchField.setPromptText("Назва або тег станції");
+        stationSearchField.setPrefWidth(220);
+        stationSearchField.setOnAction(event -> searchStations());
+        stationSearchButton.setOnAction(event -> searchStations());
+        stationPlayButton.setDisable(true);
+        stationPlayButton.setOnAction(event -> playSelectedStation());
+
+        stationList.setPrefHeight(160);
+        stationList.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(RadioStation station, boolean empty) {
+                super.updateItem(station, empty);
+                setText(empty || station == null ? null : station.toString());
+            }
+        });
+        stationList.getSelectionModel().selectedItemProperty().addListener(
+                (observable, oldValue, newValue) -> stationPlayButton.setDisable(newValue == null));
+        stationList.setOnMouseClicked(event -> {
+            if (event.getClickCount() == 2) {
+                playSelectedStation();
+            }
+        });
+
         player.setOnTrackFinished(() -> Platform.runLater(this::onTrackFinished));
 
         updateModeControls();
@@ -141,6 +181,9 @@ public class MainView extends VBox {
                 new HBox(8, new Label("Середні:"), midEqSlider),
                 new HBox(8, new Label("Високі:"), highEqSlider),
                 new HBox(8, new Label("Режими:"), repeatButton, shuffleButton),
+                new HBox(8, new Label("URL потоку:"), streamUrlField, streamPlayButton),
+                new HBox(8, new Label("Radio Browser:"), stationSearchField, stationSearchButton, stationPlayButton),
+                stationList,
                 trackList,
                 trackInfoLabel,
                 fileLabel,
@@ -291,6 +334,7 @@ public class MainView extends VBox {
             return;
         }
 
+        currentStreamUrl = null;
         try {
             player.play(track);
             pauseButton.setText("Пауза");
@@ -336,19 +380,114 @@ public class MainView extends VBox {
             statusLabel.setText("Пауза");
         } else {
             pauseButton.setText("Пауза");
-            Track track = queue.getCurrentTrack();
-            statusLabel.setText(track == null ? "Відтворення" : "Відтворення: " + track);
+            if (currentStreamUrl != null) {
+                statusLabel.setText("Відтворення потоку: " + currentStreamUrl);
+            } else {
+                Track track = queue.getCurrentTrack();
+                statusLabel.setText(track == null ? "Відтворення" : "Відтворення: " + track);
+            }
         }
     }
 
     private void stop() {
+        currentStreamUrl = null;
         player.stop();
         pauseButton.setText("Пауза");
         statusLabel.setText("Зупинено");
     }
 
+    private void playSelectedStation() {
+        RadioStation station = stationList.getSelectionModel().getSelectedItem();
+        if (station == null) {
+            statusLabel.setText("Оберіть станцію зі списку");
+            return;
+        }
+
+        String url = station.getPlaybackUrl();
+        if (!hasText(url)) {
+            statusLabel.setText("У станції немає URL потоку");
+            return;
+        }
+
+        streamUrlField.setText(url);
+        playStream(url);
+    }
+
+    private void searchStations() {
+        String query = stationSearchField.getText();
+        if (!hasText(query)) {
+            statusLabel.setText("Введіть назву або тег станції");
+            return;
+        }
+
+        stationSearchButton.setDisable(true);
+        statusLabel.setText("Пошук станцій Radio Browser...");
+        CompletableFuture.supplyAsync(() -> radioBrowserClient.search(query))
+                .whenComplete((stations, error) -> Platform.runLater(() -> {
+                    stationSearchButton.setDisable(false);
+                    if (error != null) {
+                        statusLabel.setText("Помилка пошуку: " + errorMessage(error));
+                        return;
+                    }
+
+                    stationList.getItems().setAll(stations);
+                    statusLabel.setText(stations.isEmpty()
+                            ? "Станцій не знайдено"
+                            : "Знайдено станцій: " + stations.size());
+                }));
+    }
+
+    private void playStream(String url) {
+        if (!hasText(url)) {
+            statusLabel.setText("Введіть URL аудіопотоку");
+            return;
+        }
+
+        String streamUrl = url.trim();
+        long request = ++streamRequest;
+        currentStreamUrl = null;
+        streamPlayButton.setDisable(true);
+        stationPlayButton.setDisable(true);
+        statusLabel.setText("Підключення до потоку...");
+
+        CompletableFuture.supplyAsync(() -> player.playUrl(streamUrl))
+                .whenComplete((started, error) -> Platform.runLater(() -> {
+                    if (request != streamRequest) {
+                        return;
+                    }
+
+                    streamPlayButton.setDisable(false);
+                    stationPlayButton.setDisable(stationList.getSelectionModel().getSelectedItem() == null);
+
+                    if (error != null) {
+                        statusLabel.setText("Помилка потоку: " + errorMessage(error));
+                        return;
+                    }
+                    if (!Boolean.TRUE.equals(started)) {
+                        return;
+                    }
+
+                    currentStreamUrl = streamUrl;
+                    pauseButton.setText("Пауза");
+                    fileLabel.setText("Потік: " + streamUrl);
+                    trackInfoLabel.setText("Інтернет-потік: " + streamUrl);
+                    statusLabel.setText("Відтворення потоку: " + streamUrl);
+                }));
+    }
+
+    private static String errorMessage(Throwable error) {
+        Throwable cause = error.getCause() == null ? error : error.getCause();
+        return hasText(cause.getMessage()) ? cause.getMessage() : cause.toString();
+    }
+
     private void onTrackFinished() {
+        boolean streamFinished = currentStreamUrl != null;
+        currentStreamUrl = null;
         pauseButton.setText("Пауза");
+        if (streamFinished) {
+            statusLabel.setText("Потік завершено");
+            return;
+        }
         if (queue.hasNext()) {
             queue.next();
             playTrack(queue.getCurrentIndex());

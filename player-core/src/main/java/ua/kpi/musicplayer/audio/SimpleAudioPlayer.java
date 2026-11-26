@@ -11,7 +11,9 @@ import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.UnsupportedAudioFileException;
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Path;
+import java.util.concurrent.atomic.AtomicLong;
 
 
 public class SimpleAudioPlayer {
@@ -20,6 +22,7 @@ public class SimpleAudioPlayer {
 
     private final Object pauseLock = new Object();
     private final Equalizer equalizer = new Equalizer();
+    private final AtomicLong playRequest = new AtomicLong();
 
     private volatile boolean playing;
     private volatile boolean paused;
@@ -33,44 +36,85 @@ public class SimpleAudioPlayer {
     }
 
     public void play(Path file) {
-        stop();
+        playRequest.incrementAndGet();
+        stopPlayback();
+
+        AudioInputStream input = null;
         try {
-            AudioInputStream input = AudioSystem.getAudioInputStream(file.toFile());
-            AudioFormat format = input.getFormat();
-            if (format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED) {
-                AudioFormat pcm = new AudioFormat(
-                        AudioFormat.Encoding.PCM_SIGNED,
-                        format.getSampleRate(),
-                        16,
-                        format.getChannels(),
-                        format.getChannels() * 2,
-                        format.getSampleRate(),
-                        false);
-                input = AudioSystem.getAudioInputStream(pcm, input);
-                format = pcm;
-            }
-
-            SourceDataLine newLine = (SourceDataLine) AudioSystem.getLine(
-                    new DataLine.Info(SourceDataLine.class, format));
-            newLine.open(format);
-            applyVolume(newLine);
-            equalizer.resetState();
-
-            line = newLine;
-            playing = true;
-            paused = false;
-
-            AudioInputStream audioStream = input;
-            AudioFormat playbackFormat = format;
-            playbackThread = new Thread(() -> playLoop(newLine, audioStream, playbackFormat), "Audio playback");
-            playbackThread.setDaemon(true);
-            playbackThread.start();
+            input = AudioSystem.getAudioInputStream(file.toFile());
+            startPlayback(input);
         } catch (UnsupportedAudioFileException | LineUnavailableException | IOException e) {
+            closeQuietly(input);
             throw new IllegalStateException("Не вдалося відтворити файл: " + file, e);
         }
     }
 
+    public boolean playUrl(String url) {
+        if (url == null || url.isBlank()) {
+            throw new IllegalArgumentException("URL потоку не задано");
+        }
+
+        String streamUrl = url.trim();
+        long request = playRequest.incrementAndGet();
+        stopPlayback();
+
+        AudioInputStream input = null;
+        try {
+            input = AudioSystem.getAudioInputStream(URI.create(streamUrl).toURL());
+            if (playRequest.get() != request) {
+                closeQuietly(input);
+                return false;
+            }
+            startPlayback(input);
+            return true;
+        } catch (IllegalArgumentException e) {
+            closeQuietly(input);
+            throw new IllegalStateException("Некоректний URL потоку: " + streamUrl, e);
+        } catch (UnsupportedAudioFileException | LineUnavailableException | IOException e) {
+            closeQuietly(input);
+            throw new IllegalStateException("Не вдалося відтворити потік: " + streamUrl, e);
+        }
+    }
+
+    private void startPlayback(AudioInputStream input)
+            throws UnsupportedAudioFileException, LineUnavailableException, IOException {
+        AudioFormat format = input.getFormat();
+        if (format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED) {
+            AudioFormat pcm = new AudioFormat(
+                    AudioFormat.Encoding.PCM_SIGNED,
+                    format.getSampleRate(),
+                    16,
+                    format.getChannels(),
+                    format.getChannels() * 2,
+                    format.getSampleRate(),
+                    false);
+            input = AudioSystem.getAudioInputStream(pcm, input);
+            format = pcm;
+        }
+
+        SourceDataLine newLine = (SourceDataLine) AudioSystem.getLine(
+                new DataLine.Info(SourceDataLine.class, format));
+        newLine.open(format);
+        applyVolume(newLine);
+        equalizer.resetState();
+
+        line = newLine;
+        playing = true;
+        paused = false;
+
+        AudioInputStream audioStream = input;
+        AudioFormat playbackFormat = format;
+        playbackThread = new Thread(() -> playLoop(newLine, audioStream, playbackFormat), "Audio playback");
+        playbackThread.setDaemon(true);
+        playbackThread.start();
+    }
+
     public void stop() {
+        playRequest.incrementAndGet();
+        stopPlayback();
+    }
+
+    private void stopPlayback() {
         playing = false;
         paused = false;
         synchronized (pauseLock) {
@@ -239,6 +283,9 @@ public class SimpleAudioPlayer {
     }
 
     private void closeQuietly(AudioInputStream stream) {
+        if (stream == null) {
+            return;
+        }
         try {
             stream.close();
         } catch (IOException ignored) {
