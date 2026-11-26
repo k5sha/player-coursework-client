@@ -32,6 +32,8 @@ public class MainView extends VBox {
     private final Label trackInfoLabel = new Label("Інформація про трек відсутня");
     private final Label statusLabel = new Label("Готово до роботи");
     private final Button pauseButton = new Button("Пауза");
+    private final Button repeatButton = new Button();
+    private final Button shuffleButton = new Button();
 
     public MainView(SimpleAudioPlayer player) {
         this.player = player;
@@ -56,6 +58,18 @@ public class MainView extends VBox {
         nextButton.setOnAction(event -> playNext());
 
         pauseButton.setOnAction(event -> togglePause());
+
+        repeatButton.setOnAction(event -> {
+            queue.cycleRepeatMode();
+            updateModeControls();
+            statusLabel.setText("Режим повтору: " + repeatModeText());
+        });
+
+        shuffleButton.setOnAction(event -> {
+            queue.toggleShuffle();
+            updateModeControls();
+            statusLabel.setText("Перемішування: " + (queue.isShuffle() ? "увімкнено" : "вимкнено"));
+        });
 
         Slider volumeSlider = new Slider(0, 100, player.getVolume() * 100);
         volumeSlider.setPrefWidth(180);
@@ -85,9 +99,12 @@ public class MainView extends VBox {
 
         player.setOnTrackFinished(() -> Platform.runLater(this::onTrackFinished));
 
+        updateModeControls();
+
         getChildren().addAll(
                 new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
+                new HBox(8, new Label("Режими:"), repeatButton, shuffleButton),
                 trackList,
                 trackInfoLabel,
                 fileLabel,
@@ -158,6 +175,22 @@ public class MainView extends VBox {
     private static String formatDuration(long durationMs) {
         long totalSeconds = durationMs / 1000;
         return String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60);
+    }
+
+    private void updateModeControls() {
+        repeatButton.setText("Повтор: " + repeatModeText());
+        shuffleButton.setText("Перемішування: " + (queue.isShuffle() ? "увімк." : "вимк."));
+    }
+
+    private String repeatModeText() {
+        switch (queue.getRepeatMode()) {
+            case ALL:
+                return "усі";
+            case ONE:
+                return "один";
+            default:
+                return "вимк.";
+        }
     }
 
     private void play() {
