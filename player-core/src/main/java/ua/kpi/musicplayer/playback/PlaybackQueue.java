@@ -50,6 +50,12 @@ public class PlaybackQueue {
         return currentIndex;
     }
 
+    public void setCurrentIndex(int index) {
+        if (index >= -1 && index < tracks.size()) {
+            currentIndex = index;
+        }
+    }
+
     public void select(int index) {
         if (index >= 0 && index < tracks.size()) {
             currentIndex = index;
@@ -81,6 +87,10 @@ public class PlaybackQueue {
 
     public boolean isShuffle() {
         return shuffle;
+    }
+
+    public void setShuffle(boolean shuffle) {
+        this.shuffle = shuffle;
     }
 
     public void toggleShuffle() {

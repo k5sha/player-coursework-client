@@ -6,7 +6,7 @@ import javax.sound.sampled.AudioFormat;
 import javax.sound.sampled.AudioInputStream;
 import javax.sound.sampled.AudioSystem;
 import javax.sound.sampled.DataLine;
- import javax.sound.sampled.FloatControl;
+import javax.sound.sampled.FloatControl;
 import javax.sound.sampled.LineUnavailableException;
 import javax.sound.sampled.SourceDataLine;
 import javax.sound.sampled.UnsupportedAudioFileException;
@@ -28,7 +28,13 @@ public class SimpleAudioPlayer {
     private volatile boolean paused;
     private volatile float volume = 1.0f;
     private volatile Runnable onTrackFinished;
-    private Thread playbackThread;
+    private volatile long positionMs;
+    private volatile long durationMs;
+    private volatile boolean canSeek;
+    private volatile Path currentFile;
+    private volatile Path preparedFile;
+    private volatile long preparedPositionMs;
+    private volatile Thread playbackThread;
     private SourceDataLine line;
 
     public void play(Track track) {
@@ -39,12 +45,30 @@ public class SimpleAudioPlayer {
         playRequest.incrementAndGet();
         stopPlayback();
 
+        currentFile = file;
+        canSeek = true;
+        positionMs = 0;
+        durationMs = 0;
+
+        long startPositionMs = 0;
+        if (file.equals(preparedFile)) {
+            startPositionMs = preparedPositionMs;
+        }
+        preparedFile = null;
+        preparedPositionMs = 0;
+
         AudioInputStream input = null;
         try {
-            input = AudioSystem.getAudioInputStream(file.toFile());
-            startPlayback(input);
+            input = openPcmStream(file);
+            durationMs = calculateDurationMs(input);
+            startPositionMs = clampPositionMs(startPositionMs);
+            positionMs = startPositionMs;
+            skipToPosition(input, startPositionMs);
+            startPlayback(input, startPositionMs, false);
         } catch (UnsupportedAudioFileException | LineUnavailableException | IOException e) {
             closeQuietly(input);
+            canSeek = false;
+            currentFile = null;
             throw new IllegalStateException("Не вдалося відтворити файл: " + file, e);
         }
     }
@@ -58,6 +82,13 @@ public class SimpleAudioPlayer {
         long request = playRequest.incrementAndGet();
         stopPlayback();
 
+        currentFile = null;
+        preparedFile = null;
+        preparedPositionMs = 0;
+        canSeek = false;
+        positionMs = 0;
+        durationMs = 0;
+
         AudioInputStream input = null;
         try {
             input = AudioSystem.getAudioInputStream(URI.create(streamUrl).toURL());
@@ -65,7 +96,8 @@ public class SimpleAudioPlayer {
                 closeQuietly(input);
                 return false;
             }
-            startPlayback(input);
+            input = toPcmStream(input);
+            startPlayback(input, 0, false);
             return true;
         } catch (IllegalArgumentException e) {
             closeQuietly(input);
@@ -76,22 +108,41 @@ public class SimpleAudioPlayer {
         }
     }
 
-    private void startPlayback(AudioInputStream input)
-            throws UnsupportedAudioFileException, LineUnavailableException, IOException {
+    private AudioInputStream openPcmStream(Path file)
+            throws UnsupportedAudioFileException, IOException {
+        return toPcmStream(AudioSystem.getAudioInputStream(file.toFile()));
+    }
+
+    private AudioInputStream toPcmStream(AudioInputStream input)
+            throws UnsupportedAudioFileException, IOException {
         AudioFormat format = input.getFormat();
-        if (format.getEncoding() != AudioFormat.Encoding.PCM_SIGNED) {
-            AudioFormat pcm = new AudioFormat(
-                    AudioFormat.Encoding.PCM_SIGNED,
-                    format.getSampleRate(),
-                    16,
-                    format.getChannels(),
-                    format.getChannels() * 2,
-                    format.getSampleRate(),
-                    false);
-            input = AudioSystem.getAudioInputStream(pcm, input);
-            format = pcm;
+        if (format.getEncoding() == AudioFormat.Encoding.PCM_SIGNED) {
+            return input;
         }
 
+        AudioFormat pcm = new AudioFormat(
+                AudioFormat.Encoding.PCM_SIGNED,
+                format.getSampleRate(),
+                16,
+                format.getChannels(),
+                format.getChannels() * 2,
+                format.getSampleRate(),
+                false);
+        return AudioSystem.getAudioInputStream(pcm, input);
+    }
+
+    private long calculateDurationMs(AudioInputStream input) {
+        long frameLength = input.getFrameLength();
+        float frameRate = input.getFormat().getFrameRate();
+        if (frameLength <= 0 || frameRate <= 0) {
+            return 0;
+        }
+        return (long) (frameLength * 1000.0 / frameRate);
+    }
+
+    private void startPlayback(AudioInputStream input, long startPositionMs, boolean startPaused)
+            throws LineUnavailableException {
+        AudioFormat format = input.getFormat();
         SourceDataLine newLine = (SourceDataLine) AudioSystem.getLine(
                 new DataLine.Info(SourceDataLine.class, format));
         newLine.open(format);
@@ -100,18 +151,29 @@ public class SimpleAudioPlayer {
 
         line = newLine;
         playing = true;
-        paused = false;
+        paused = startPaused;
+        positionMs = startPositionMs;
 
         AudioInputStream audioStream = input;
         AudioFormat playbackFormat = format;
-        playbackThread = new Thread(() -> playLoop(newLine, audioStream, playbackFormat), "Audio playback");
-        playbackThread.setDaemon(true);
-        playbackThread.start();
+        Thread thread = new Thread(
+                () -> playLoop(newLine, audioStream, playbackFormat, startPositionMs),
+                "Audio playback");
+        thread.setDaemon(true);
+        playbackThread = thread;
+        thread.start();
     }
 
     public void stop() {
         playRequest.incrementAndGet();
         stopPlayback();
+
+        currentFile = null;
+        preparedFile = null;
+        preparedPositionMs = 0;
+        canSeek = false;
+        positionMs = 0;
+        durationMs = 0;
     }
 
     private void stopPlayback() {
@@ -140,6 +202,109 @@ public class SimpleAudioPlayer {
             }
         }
         playbackThread = null;
+    }
+
+    public void seekToSeconds(double seconds) {
+        if (!canSeek) {
+            return;
+        }
+
+        long targetMs = clampPositionMs(Math.max(0, Math.round(seconds * 1000.0)));
+        positionMs = targetMs;
+
+        Path file = currentFile;
+        if (file == null) {
+            if (preparedFile != null) {
+                preparedPositionMs = targetMs;
+            }
+            return;
+        }
+        if (!playing) {
+            preparedFile = file;
+            preparedPositionMs = targetMs;
+            return;
+        }
+
+        boolean wasPaused = paused;
+        playRequest.incrementAndGet();
+        stopPlayback();
+
+        AudioInputStream input = null;
+        try {
+            input = openPcmStream(file);
+            long resolvedDurationMs = calculateDurationMs(input);
+            if (resolvedDurationMs > 0) {
+                durationMs = resolvedDurationMs;
+            }
+            targetMs = clampPositionMs(targetMs);
+            positionMs = targetMs;
+            skipToPosition(input, targetMs);
+            startPlayback(input, targetMs, wasPaused);
+        } catch (UnsupportedAudioFileException | LineUnavailableException | IOException e) {
+            closeQuietly(input);
+            throw new IllegalStateException("Не вдалося перемотати трек", e);
+        }
+    }
+
+    public void preparePosition(Track track, double seconds) {
+        if (track == null || track.getLocation() == null || track.getLocation().isBlank()) {
+            preparedFile = null;
+            preparedPositionMs = 0;
+            positionMs = 0;
+            canSeek = false;
+            return;
+        }
+
+        preparedFile = Path.of(track.getLocation());
+        preparedPositionMs = Math.max(0, Math.round(seconds * 1000.0));
+        positionMs = preparedPositionMs;
+        durationMs = 0;
+        canSeek = true;
+    }
+
+    public double getPositionSeconds() {
+        return positionMs / 1000.0;
+    }
+
+    public double getDurationSeconds() {
+        return durationMs / 1000.0;
+    }
+
+    public boolean canSeek() {
+        return canSeek;
+    }
+
+    private long clampPositionMs(long value) {
+        if (value < 0) {
+            return 0;
+        }
+        if (durationMs > 0 && value > durationMs) {
+            return durationMs;
+        }
+        return value;
+    }
+
+    private void skipToPosition(AudioInputStream input, long positionMs) throws IOException {
+        AudioFormat format = input.getFormat();
+        int frameSize = format.getFrameSize();
+        float frameRate = format.getFrameRate();
+        if (positionMs <= 0 || frameSize <= 0 || frameRate <= 0) {
+            return;
+        }
+
+        long bytesPerSecond = (long) (frameRate * frameSize);
+        long bytesToSkip = positionMs * bytesPerSecond / 1000;
+        bytesToSkip -= bytesToSkip % frameSize;
+
+        byte[] discard = new byte[BUFFER_SIZE];
+        long remaining = bytesToSkip;
+        while (remaining > 0) {
+            int read = input.read(discard, 0, (int) Math.min(discard.length, remaining));
+            if (read < 0) {
+                return;
+            }
+            remaining -= read;
+        }
     }
 
     public void pause() {
@@ -228,15 +393,18 @@ public class SimpleAudioPlayer {
         }
     }
 
-    private void playLoop(SourceDataLine dataLine, AudioInputStream input, AudioFormat format) {
+    private void playLoop(SourceDataLine dataLine, AudioInputStream input, AudioFormat format,
+                          long startPositionMs) {
         byte[] buffer = new byte[BUFFER_SIZE];
+        long bytesPerSecond = (long) (format.getFrameRate() * format.getFrameSize());
+        long processedBytes = 0;
         boolean finishedNaturally = false;
         try {
             if (!paused) {
                 dataLine.start();
             }
             int read;
-            while (playing) {
+            while (playing && playbackThread == Thread.currentThread()) {
                 read = input.read(buffer, 0, buffer.length);
                 if (read == -1) {
                     finishedNaturally = playing;
@@ -244,10 +412,17 @@ public class SimpleAudioPlayer {
                 }
                 equalizer.process(buffer, read, format);
                 awaitResume();
-                if (!playing) {
+                if (!playing || playbackThread != Thread.currentThread()) {
                     break;
                 }
                 dataLine.write(buffer, 0, read);
+                processedBytes += read;
+                if (canSeek && bytesPerSecond > 0 && playbackThread == Thread.currentThread()) {
+                    long currentPositionMs = startPositionMs + processedBytes * 1000L / bytesPerSecond;
+                    positionMs = durationMs > 0
+                            ? Math.min(currentPositionMs, durationMs)
+                            : currentPositionMs;
+                }
             }
             if (playing) {
                 dataLine.drain();
@@ -255,16 +430,22 @@ public class SimpleAudioPlayer {
         } catch (IOException | IllegalStateException ignored) {
             // Відтворення зупинено викликом stop()
         } finally {
-            playing = false;
-            paused = false;
+            boolean active = playbackThread == Thread.currentThread();
+            if (active) {
+                playing = false;
+                paused = false;
+                if (finishedNaturally && durationMs > 0) {
+                    positionMs = durationMs;
+                }
+            }
             closeQuietly(input);
             dataLine.close();
-        }
 
-        if (finishedNaturally) {
-            Runnable callback = onTrackFinished;
-            if (callback != null) {
-                callback.run();
+            if (finishedNaturally && active) {
+                Runnable callback = onTrackFinished;
+                if (callback != null) {
+                    callback.run();
+                }
             }
         }
     }

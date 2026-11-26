@@ -2,6 +2,7 @@ package ua.kpi.musicplayer.facade;
 
 import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
+import ua.kpi.musicplayer.memento.PlayerMemento;
 import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.storage.TrackStorage;
@@ -180,6 +181,71 @@ public class MusicPlayerFacade {
 
     public void setBandGainDb(int band, float gainDb) {
         player.getEqualizer().setBandGainDb(band, gainDb);
+    }
+
+    public PlayerMemento createMemento() {
+        float[] bands = new float[Equalizer.BAND_COUNT];
+        for (int band = 0; band < bands.length; band++) {
+            bands[band] = player.getEqualizer().getBandGainDb(band);
+        }
+        return new PlayerMemento(
+                queue.getCurrentIndex(),
+                queue.getRepeatMode(),
+                queue.isShuffle(),
+                player.getVolume(),
+                bands,
+                player.getPositionSeconds());
+    }
+
+    public void restore(PlayerMemento memento) {
+        if (memento == null) {
+            return;
+        }
+
+        queue.setCurrentIndex(memento.getCurrentIndex());
+        queue.setRepeatMode(memento.getRepeatMode());
+        queue.setShuffle(memento.isShuffle());
+        player.setVolume(memento.getVolume());
+
+        float[] bands = memento.getEqualizerBands();
+        for (int band = 0; band < Equalizer.BAND_COUNT && band < bands.length; band++) {
+            player.getEqualizer().setBandGainDb(band, bands[band]);
+        }
+
+        player.preparePosition(
+                queue.getCurrentTrack(),
+                queue.getCurrentIndex() == memento.getCurrentIndex()
+                        ? memento.getPositionSeconds()
+                        : 0);
+    }
+
+    public double getCurrentPositionSeconds() {
+        if (currentStreamUrl != null) {
+            return 0;
+        }
+        return player.getPositionSeconds();
+    }
+
+    public double getDurationSeconds() {
+        if (currentStreamUrl != null) {
+            return 0;
+        }
+
+        double duration = player.getDurationSeconds();
+        if (duration > 0) {
+            return duration;
+        }
+
+        Track track = queue.getCurrentTrack();
+        return track == null ? 0 : track.getDurationMs() / 1000.0;
+    }
+
+    public boolean canSeek() {
+        return currentStreamUrl == null && player.canSeek();
+    }
+
+    public void seekToSeconds(double seconds) {
+        player.seekToSeconds(seconds);
     }
 
     public List<RadioStation> searchStations(String query) {

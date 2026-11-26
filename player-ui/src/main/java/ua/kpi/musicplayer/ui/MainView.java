@@ -1,6 +1,8 @@
 package ua.kpi.musicplayer.ui;
 
 import javafx.application.Platform;
+import javafx.animation.KeyFrame;
+import javafx.animation.Timeline;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.control.Button;
@@ -13,21 +15,32 @@ import javafx.scene.control.TextField;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
+import javafx.util.Duration;
 import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.facade.MusicPlayerFacade;
+import ua.kpi.musicplayer.memento.PlayerMemento;
 import ua.kpi.musicplayer.model.Track;
+import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
 
 public class MainView extends VBox {
 
     private static final String CURRENT_TRACK_STYLE =
             "-fx-font-weight: bold; -fx-text-fill: #1565c0;";
+    private static final Path STATE_FILE =
+            Path.of(System.getProperty("user.home"), "musicplayer-state.properties");
 
     private final MusicPlayerFacade facade;
     private final ListView<Track> trackList = new ListView<>();
@@ -44,9 +57,15 @@ public class MainView extends VBox {
     private final Button stationSearchButton = new Button("Знайти");
     private final Button stationPlayButton = new Button("Обрану станцію");
     private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
+    private final Slider seekSlider = new Slider(0, 1, 0);
+    private final Label seekTimeLabel = new Label("00:00 / 00:00");
+    private final Timeline seekTimeline =
+            new Timeline(new KeyFrame(Duration.millis(500), event -> updateSeekControls()));
+    private Slider volumeSlider;
     private Slider lowEqSlider;
     private Slider midEqSlider;
     private Slider highEqSlider;
+    private boolean updatingSeekSlider;
     private long streamRequest;
 
     public MainView(MusicPlayerFacade facade) {
@@ -85,10 +104,20 @@ public class MainView extends VBox {
             statusLabel.setText("Перемішування: " + (facade.isShuffle() ? "увімкнено" : "вимкнено"));
         });
 
-        Slider volumeSlider = new Slider(0, 100, facade.getVolume() * 100);
+        volumeSlider = new Slider(0, 100, facade.getVolume() * 100);
         volumeSlider.setPrefWidth(180);
         volumeSlider.valueProperty().addListener((observable, oldValue, newValue) ->
                 facade.setVolume(newValue.floatValue() / 100.0f));
+
+        seekSlider.setPrefWidth(320);
+        seekSlider.setDisable(true);
+        seekSlider.valueProperty().addListener((observable, oldValue, newValue) -> {
+            if (!updatingSeekSlider) {
+                seekTimeLabel.setText(formatDuration(Math.round(newValue.doubleValue() * 1000))
+                        + " / " + formatDuration(Math.round(seekSlider.getMax() * 1000)));
+            }
+        });
+        seekSlider.setOnMouseReleased(event -> seekToSliderValue());
 
         lowEqSlider = createEqSlider(Equalizer.LOW_BAND);
         midEqSlider = createEqSlider(Equalizer.MID_BAND);
@@ -167,9 +196,21 @@ public class MainView extends VBox {
 
         updateModeControls();
 
+        sceneProperty().addListener((observable, oldScene, newScene) -> {
+            if (newScene == null) {
+                return;
+            }
+            newScene.windowProperty().addListener((windowObservable, oldWindow, newWindow) -> {
+                if (newWindow != null) {
+                    newWindow.setOnCloseRequest(event -> savePlayerState());
+                }
+            });
+        });
+
         getChildren().addAll(
                 new HBox(8, chooseButton, playButton, pauseButton, stopButton, previousButton, nextButton),
                 new HBox(8, new Label("Гучність:"), volumeSlider),
+                new HBox(8, new Label("Позиція:"), seekSlider, seekTimeLabel),
                 new HBox(8, new Label("Еквалайзер:"), equalizerPresetBox, resetEqualizerButton),
                 new HBox(8, new Label("Низькі:"), lowEqSlider),
                 new HBox(8, new Label("Середні:"), midEqSlider),
@@ -184,11 +225,15 @@ public class MainView extends VBox {
                 statusLabel);
 
         loadSavedTracks();
+        updateSeekControls();
+        seekTimeline.setCycleCount(Timeline.INDEFINITE);
+        seekTimeline.play();
     }
 
     private void loadSavedTracks() {
         try {
             List<Track> savedTracks = facade.loadSavedTracks();
+            restoreSavedPlayerState();
             if (savedTracks.isEmpty()) {
                 return;
             }
@@ -199,6 +244,59 @@ public class MainView extends VBox {
             statusLabel.setText("Завантажено збережених треків: " + savedTracks.size());
         } catch (RuntimeException e) {
             statusLabel.setText("Не вдалося завантажити треки: " + e.getMessage());
+        }
+    }
+
+    private void savePlayerState() {
+        PlayerMemento memento = facade.createMemento();
+        Properties properties = new Properties();
+        properties.setProperty("currentIndex", String.valueOf(memento.getCurrentIndex()));
+        properties.setProperty("repeatMode", memento.getRepeatMode().name());
+        properties.setProperty("shuffle", String.valueOf(memento.isShuffle()));
+        properties.setProperty("volume", String.valueOf(memento.getVolume()));
+        properties.setProperty("positionSeconds", String.valueOf(memento.getPositionSeconds()));
+
+        float[] bands = memento.getEqualizerBands();
+        for (int band = 0; band < bands.length; band++) {
+            properties.setProperty("equalizer." + band, String.valueOf(bands[band]));
+        }
+
+        try (OutputStream output = Files.newOutputStream(STATE_FILE)) {
+            properties.store(output, "Music player state");
+        } catch (IOException ignored) {
+            // Стан не збережено, роботі програми це не заважає
+        }
+    }
+
+    private void restoreSavedPlayerState() {
+        if (!Files.exists(STATE_FILE)) {
+            return;
+        }
+
+        Properties properties = new Properties();
+        try (InputStream input = Files.newInputStream(STATE_FILE)) {
+            properties.load(input);
+
+            float[] bands = new float[Equalizer.BAND_COUNT];
+            for (int band = 0; band < bands.length; band++) {
+                bands[band] = Float.parseFloat(properties.getProperty("equalizer." + band, "0"));
+            }
+
+            PlayerMemento memento = new PlayerMemento(
+                    Integer.parseInt(properties.getProperty("currentIndex", "-1")),
+                    PlaybackQueue.RepeatMode.valueOf(properties.getProperty("repeatMode", "OFF")),
+                    Boolean.parseBoolean(properties.getProperty("shuffle", "false")),
+                    Float.parseFloat(properties.getProperty("volume", "1")),
+                    bands,
+                    Double.parseDouble(properties.getProperty("positionSeconds", "0")));
+            facade.restore(memento);
+
+            volumeSlider.setValue(facade.getVolume() * 100);
+            updateModeControls();
+            updateEqualizerControls();
+            updateSeekControls();
+        } catch (IOException | RuntimeException ignored) {
+            // Пошкоджений файл стану не заважає запуску програми
         }
     }
 
@@ -216,6 +314,40 @@ public class MainView extends VBox {
         lowEqSlider.setValue(facade.getBandGainDb(Equalizer.LOW_BAND));
         midEqSlider.setValue(facade.getBandGainDb(Equalizer.MID_BAND));
         highEqSlider.setValue(facade.getBandGainDb(Equalizer.HIGH_BAND));
+    }
+
+    private void seekToSliderValue() {
+        if (!facade.canSeek()) {
+            return;
+        }
+
+        try {
+            facade.seekToSeconds(seekSlider.getValue());
+        } catch (RuntimeException e) {
+            statusLabel.setText("Помилка перемотування: " + e.getMessage());
+        }
+        updateSeekControls();
+    }
+
+    private void updateSeekControls() {
+        double duration = facade.getDurationSeconds();
+        double position = facade.getCurrentPositionSeconds();
+        boolean seekable = facade.canSeek() && duration > 0;
+
+        seekSlider.setDisable(!seekable);
+        seekSlider.setMax(duration > 0 ? duration : 1);
+        if (!seekSlider.isValueChanging()) {
+            updatingSeekSlider = true;
+            try {
+                seekSlider.setValue(Math.min(position, seekSlider.getMax()));
+            } finally {
+                updatingSeekSlider = false;
+            }
+        }
+
+        double shownPosition = seekSlider.isValueChanging() ? seekSlider.getValue() : position;
+        seekTimeLabel.setText(formatDuration(Math.round(shownPosition * 1000)) + " / "
+                + formatDuration(Math.round(duration * 1000)));
     }
 
     private void chooseFiles() {
@@ -339,6 +471,7 @@ public class MainView extends VBox {
         statusLabel.setText("Відтворення: " + track);
         trackList.getSelectionModel().select(facade.getCurrentIndex());
         trackList.refresh();
+        updateSeekControls();
     }
 
     private void playNext() {
@@ -393,6 +526,7 @@ public class MainView extends VBox {
         facade.stop();
         pauseButton.setText("Пауза");
         statusLabel.setText("Зупинено");
+        updateSeekControls();
     }
 
     private void playSelectedStation() {
@@ -446,6 +580,7 @@ public class MainView extends VBox {
         long request = ++streamRequest;
         streamPlayButton.setDisable(true);
         stationPlayButton.setDisable(true);
+        seekSlider.setDisable(true);
         statusLabel.setText("Підключення до потоку...");
 
         CompletableFuture.supplyAsync(() -> facade.playStream(streamUrl))
@@ -456,6 +591,7 @@ public class MainView extends VBox {
 
                     streamPlayButton.setDisable(false);
                     stationPlayButton.setDisable(stationList.getSelectionModel().getSelectedItem() == null);
+                    updateSeekControls();
 
                     if (error != null) {
                         statusLabel.setText("Помилка потоку: " + errorMessage(error));
@@ -481,6 +617,7 @@ public class MainView extends VBox {
         pauseButton.setText("Пауза");
         if (streamFinished) {
             statusLabel.setText("Потік завершено");
+            updateSeekControls();
             return;
         }
 
@@ -491,5 +628,6 @@ public class MainView extends VBox {
             statusLabel.setText("Відтворення завершено");
             trackList.refresh();
         }
+        updateSeekControls();
     }
 }
