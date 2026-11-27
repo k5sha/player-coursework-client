@@ -3,8 +3,11 @@ package ua.kpi.musicplayer.model;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 
 import java.util.Objects;
+import java.util.regex.Pattern;
 
 public class Track {
+
+    private static final Pattern TIMESTAMP_PREFIX = Pattern.compile("^\\d{10,}_");
 
     private String title;
     private String artist;
@@ -84,6 +87,28 @@ public class Track {
         return visitor.visitTrack(this);
     }
 
+    /**
+     * Прибирає службовий timestamp-префікс сервера та робить ім'я файлу
+     * придатним для показу як резервної назви треку.
+     */
+    public static String normalizeFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return "";
+        }
+
+        String name = fileName.trim();
+        int separator = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (separator >= 0) {
+            name = name.substring(separator + 1);
+        }
+        name = TIMESTAMP_PREFIX.matcher(name).replaceFirst("");
+        return name.replace('_', ' ').trim();
+    }
+
+    public static boolean hasTimestampPrefix(String value) {
+        return value != null && TIMESTAMP_PREFIX.matcher(value.trim()).lookingAt();
+    }
+
     @Override
     public boolean equals(Object other) {
         if (this == other) {
@@ -111,23 +136,17 @@ public class Track {
         boolean hasArtist = artist != null && !artist.isBlank();
         boolean hasTitle = title != null && !title.isBlank();
 
-        if (hasArtist && hasTitle) {
-            return artist.trim() + " - " + title.trim();
-        }
-        if (hasTitle) {
-            return title.trim();
-        }
+        String displayTitle = hasTitle
+                ? (hasTimestampPrefix(title) ? normalizeFileName(title) : title.trim())
+                : normalizeFileName(location);
 
-        String fileName = fileNameFromLocation();
-        return fileName.isEmpty() ? "Без назви" : fileName;
-    }
-
-    private String fileNameFromLocation() {
-        if (location == null || location.isBlank()) {
-            return "";
+        if (hasArtist && !displayTitle.isEmpty()) {
+            return artist.trim() + " - " + displayTitle;
+        }
+        if (!displayTitle.isEmpty()) {
+            return displayTitle;
         }
 
-        int separator = Math.max(location.lastIndexOf('/'), location.lastIndexOf('\\'));
-        return separator >= 0 ? location.substring(separator + 1) : location;
+        return "Без назви";
     }
 }

@@ -46,6 +46,7 @@ import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
 import ua.kpi.musicplayer.sync.PlaylistSyncResult;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
+import ua.kpi.musicplayer.sync.TrackUploadResult;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 import ua.kpi.musicplayer.visitor.SummaryMediaVisitor;
 
@@ -1151,22 +1152,10 @@ public class MainView extends StackPane {
             return;
         }
 
-        boolean hasUnsynced = false;
-        for (Track track : tracks) {
-            if (track.getServerId() <= 0) {
-                hasUnsynced = true;
-                break;
-            }
-        }
-        if (!hasUnsynced) {
-            statusLabel.setText("Усі треки вже на сервері");
-            return;
-        }
-
         uploadAllButton.setDisable(true);
         uploadButton.setDisable(true);
         syncButton.setDisable(true);
-        statusLabel.setText("Завантаження всіх треків на сервер...");
+        statusLabel.setText("Перевірка треків на сервері...");
 
         CompletableFuture.supplyAsync(() -> facade.uploadUnsyncedTracks())
                 .whenComplete((result, error) -> Platform.runLater(() -> {
@@ -1175,15 +1164,27 @@ public class MainView extends StackPane {
                     if (error != null) {
                         statusLabel.setText("Сервер: " + errorMessage(error));
                     } else {
-                        statusLabel.setText("На сервер: " + result.getUploaded()
-                                + (result.getSkipped() > 0
-                                ? ", уже були: " + result.getSkipped() : "")
-                                + (result.getFailed() > 0
-                                ? ", з помилкою: " + result.getFailed() : ""));
+                        statusLabel.setText(uploadSummary(result));
                     }
                     trackList.refresh();
                     updateUploadButton();
                 }));
+    }
+
+    private static String uploadSummary(TrackUploadResult result) {
+        if (!result.isServerAvailable()) {
+            return "Сервер недоступний — стан треків не перевірено";
+        }
+        if (result.getUploaded() == 0 && result.getFailed() == 0) {
+            return "Усі треки вже на сервері";
+        }
+
+        List<String> parts = new ArrayList<>();
+        addCount(parts, "надіслано треків", result.getUploaded());
+        addCount(parts, "уже були на сервері", result.getSkipped());
+        addCount(parts, "скинуто застарілих позначок", result.getCleared());
+        addCount(parts, "з помилкою", result.getFailed());
+        return "На сервер: " + String.join("; ", parts);
     }
 
     private void deleteTrackFromServer(Track track) {

@@ -1,5 +1,6 @@
 package ua.kpi.musicplayer.facade;
 
+import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.Equalizer;
 import ua.kpi.musicplayer.audio.SimpleAudioPlayer;
 import ua.kpi.musicplayer.memento.PlayerMemento;
@@ -613,7 +614,104 @@ public class MusicPlayerFacade {
         }
 
         int index = tracks.indexOf(track);
-        return index >= 0 ? tracks.get(index) : null;
+        if (index >= 0) {
+            return tracks.get(index);
+        }
+
+        // Після перезапуску сервера id змінюються, тому зіставляємо ще й за
+        // нормалізованим ім'ям файлу без службового timestamp-префікса.
+        String fileName = normalizedFileNameOf(track);
+        if (!fileName.isEmpty()) {
+            for (Track candidate : tracks) {
+                if (fileName.equals(normalizedFileNameOf(candidate))) {
+                    return candidate;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String normalizedFileNameOf(Track track) {
+        if (track == null) {
+            return "";
+        }
+        if (track.getFileName() != null && !track.getFileName().isBlank()) {
+            return Track.normalizeFileName(track.getFileName());
+        }
+        return Track.normalizeFileName(track.getLocation());
+    }
+
+    private static boolean needsMetadata(Track track) {
+        if (track == null) {
+            return false;
+        }
+        return !hasText(track.getArtist())
+                || isUnknownArtist(track.getArtist())
+                || !hasText(track.getTitle())
+                || Track.hasTimestampPrefix(track.getTitle())
+                || track.getDurationMs() <= 0;
+    }
+
+    private static boolean isUnknownArtist(String artist) {
+        if (!hasText(artist)) {
+            return true;
+        }
+        String value = artist.trim();
+        return value.equalsIgnoreCase("unknown artist")
+                || value.equalsIgnoreCase("unknown")
+                || value.equalsIgnoreCase("невідомий виконавець");
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    /**
+     * Читає реальні метадані з наявного локального чи кешованого файлу треку
+     * і заповнює ними трек. Використовується, коли сервер повернув трек без
+     * виконавця, назви або тривалості.
+     */
+    private static void applyMetadataFromFile(Track track) {
+        if (track == null) {
+            return;
+        }
+        Path file = localPath(track.getLocation());
+        if (file == null || !Files.isRegularFile(file)) {
+            return;
+        }
+
+        Track metadata = AudioMetadataReader.read(file.toFile());
+        if (hasText(metadata.getTitle())) {
+            track.setTitle(metadata.getTitle());
+        }
+        if (hasText(metadata.getArtist())) {
+            track.setArtist(metadata.getArtist());
+        }
+        if (hasText(metadata.getAlbum())) {
+            track.setAlbum(metadata.getAlbum());
+        }
+        if (metadata.getDurationMs() > 0) {
+            track.setDurationMs(metadata.getDurationMs());
+        }
+
+        if (Track.hasTimestampPrefix(track.getTitle())) {
+            track.setTitle(Track.normalizeFileName(track.getTitle()));
+        }
+    }
+
+    private static void applyFallbackTitle(Track track) {
+        if (track == null || hasText(track.getTitle())) {
+            return;
+        }
+
+        String name = track.getFileName();
+        if (!hasText(name)) {
+            name = track.getLocation();
+        }
+        String title = Track.normalizeFileName(name);
+        if (!title.isEmpty()) {
+            track.setTitle(title);
+        }
     }
 
     public TrackSyncResult synchronizeTracks() {
@@ -657,12 +755,13 @@ public class MusicPlayerFacade {
         int uploaded = 0;
         int failed = 0;
         for (Track track : localTracks) {
-            if (clearedTracks.contains(track)) {
-                continue;
-            }
-
+            boolean clearedTrack = clearedTracks.contains(track);
             Track remote = findMatchingTrack(remoteTracks, track);
             if (remote == null) {
+                // Треки, видалені на сервері, повторно не завантажуємо.
+                if (clearedTrack) {
+                    continue;
+                }
                 String localLocation = track.getLocation();
                 try {
                     uploadTrackFile(track);
@@ -677,9 +776,17 @@ public class MusicPlayerFacade {
             String localLocation = track.getLocation();
             String serverLocation = remote.getLocation();
             track.setServerId(remote.getServerId());
-            track.setFileName(remote.getFileName());
+            if (hasText(remote.getFileName())) {
+                track.setFileName(remote.getFileName());
+            }
             storage.updateTrackServerId(track.getLocation(), track.getServerId());
             prepareTrackFile(track);
+
+            if (needsMetadata(remote) || needsMetadata(track)) {
+                applyMetadataFromFile(track);
+            }
+            storage.updateTrackMetadata(track);
+
             rememberServerLocation(track, serverLocation);
             copyToQueued(queuedByLocation, localLocation, track);
         }
@@ -699,6 +806,11 @@ public class MusicPlayerFacade {
             if (!hasLocalFile(remote)) {
                 continue;
             }
+
+            if (needsMetadata(remote)) {
+                applyMetadataFromFile(remote);
+            }
+            applyFallbackTitle(remote);
             rememberServerLocation(remote, serverLocation);
             downloadedTracks.add(remote);
         }
@@ -722,14 +834,33 @@ public class MusicPlayerFacade {
         queued.setServerId(source.getServerId());
         queued.setFileName(source.getFileName());
         queued.setLocation(source.getLocation());
+        queued.setTitle(source.getTitle());
+        queued.setArtist(source.getArtist());
+        queued.setAlbum(source.getAlbum());
+        queued.setDurationMs(source.getDurationMs());
     }
 
     /**
      * Завантажує на сервер усі треки поточного списку, які ще не мають serverId.
+     * Перед цим звіряє позначки з сервером: якщо трек із serverId уже відсутній
+     * на сервері, позначка скидається, і трек завантажується заново.
      * Помилка окремого треку не зупиняє завантаження решти.
      */
     public TrackUploadResult uploadUnsyncedTracks() {
         List<Track> tracks = new ArrayList<>(queue.getTracks());
+        boolean serverAvailable = true;
+        int cleared = 0;
+        try {
+            cleared = clearMissingServerIds(tracks);
+        } catch (RuntimeException e) {
+            // Сервер недоступний — позначки не звірено, завантаження неможливе
+            serverAvailable = false;
+        }
+
+        if (!serverAvailable) {
+            return new TrackUploadResult(0, 0, 0, 0, false);
+        }
+
         int uploaded = 0;
         int skipped = 0;
         int failed = 0;
@@ -748,7 +879,36 @@ public class MusicPlayerFacade {
             }
         }
 
-        return new TrackUploadResult(uploaded, skipped, failed);
+        return new TrackUploadResult(uploaded, skipped, cleared, failed, serverAvailable);
+    }
+
+    /**
+     * Скидає serverId у треків, яких уже немає на сервері, щоб вони не вважалися
+     * завантаженими. Позначку прибирає і в БД.
+     */
+    private int clearMissingServerIds(List<Track> tracks) {
+        Set<Long> remoteServerIds = new HashSet<>();
+        for (Track remote : syncClient.fetchTracks()) {
+            if (remote.getServerId() > 0) {
+                remoteServerIds.add(remote.getServerId());
+            }
+        }
+
+        int cleared = 0;
+        Set<String> clearedLocations = new HashSet<>();
+        for (Track track : tracks) {
+            if (track.getServerId() <= 0 || remoteServerIds.contains(track.getServerId())) {
+                continue;
+            }
+
+            track.setServerId(0);
+            String location = track.getLocation();
+            if (location != null && !location.isBlank() && clearedLocations.add(location)) {
+                storage.clearTrackServerId(location);
+            }
+            cleared++;
+        }
+        return cleared;
     }
 
     /**

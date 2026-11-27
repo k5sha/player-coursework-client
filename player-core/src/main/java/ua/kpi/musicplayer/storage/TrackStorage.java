@@ -118,7 +118,7 @@ public class TrackStorage {
     public List<Track> loadTracks(long playlistId) {
         List<Track> tracks = new ArrayList<>();
         String sql = "SELECT tracks.title, tracks.artist, tracks.album, tracks.duration_ms, "
-                + "tracks.location, tracks.server_id FROM tracks "
+                + "tracks.location, tracks.file_name, tracks.server_id FROM tracks "
                 + "JOIN playlist_tracks ON playlist_tracks.track_id = tracks.id "
                 + "WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position";
 
@@ -133,6 +133,7 @@ public class TrackStorage {
                     track.setAlbum(resultSet.getString("album"));
                     track.setDurationMs(resultSet.getLong("duration_ms"));
                     track.setLocation(resultSet.getString("location"));
+                    track.setFileName(resultSet.getString("file_name"));
                     track.setServerId(resultSet.getLong("server_id"));
                     tracks.add(track);
                 }
@@ -176,6 +177,27 @@ public class TrackStorage {
         }
     }
 
+    public void updateTrackMetadata(Track track) {
+        if (track == null || track.getLocation() == null || track.getLocation().isBlank()) {
+            return;
+        }
+
+        String sql = "UPDATE tracks SET title = ?, artist = ?, album = ?, duration_ms = ?, "
+                + "file_name = ? WHERE location = ?";
+        try (Connection connection = connect();
+             PreparedStatement update = connection.prepareStatement(sql)) {
+            update.setString(1, track.getTitle());
+            update.setString(2, track.getArtist());
+            update.setString(3, track.getAlbum());
+            update.setLong(4, track.getDurationMs());
+            update.setString(5, track.getFileName());
+            update.setString(6, track.getLocation());
+            update.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося оновити метадані треку", e);
+        }
+    }
+
     public void clearTrackServerId(String location) {
         if (location == null || location.isBlank()) {
             return;
@@ -212,8 +234,8 @@ public class TrackStorage {
                 try (PreparedStatement findTrack = connection.prepareStatement(
                         "SELECT id FROM tracks WHERE location = ? LIMIT 1");
                      PreparedStatement insertTrack = connection.prepareStatement(
-                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, position) "
-                                     + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, position) "
+                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                              Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement insertLink = connection.prepareStatement(
                              "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
@@ -266,8 +288,8 @@ public class TrackStorage {
                 try (PreparedStatement findTrack = connection.prepareStatement(
                         "SELECT id FROM tracks WHERE location = ? LIMIT 1");
                      PreparedStatement insertTrack = connection.prepareStatement(
-                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, position) "
-                                     + "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, position) "
+                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                              Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement insertTargetLink = connection.prepareStatement(
                              "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
@@ -376,7 +398,8 @@ public class TrackStorage {
         insertTrack.setLong(4, track.getDurationMs());
         insertTrack.setString(5, track.getLocation());
         insertTrack.setLong(6, track.getServerId());
-        insertTrack.setInt(7, position);
+        insertTrack.setString(7, track.getFileName());
+        insertTrack.setInt(8, position);
         insertTrack.executeUpdate();
 
         try (ResultSet keys = insertTrack.getGeneratedKeys()) {
@@ -434,23 +457,31 @@ public class TrackStorage {
     }
 
     private void ensureTrackColumns(Connection connection) throws SQLException {
-        boolean hasServerId = false;
-        try (Statement statement = connection.createStatement();
-             ResultSet columns = statement.executeQuery("PRAGMA table_info(tracks)")) {
-            while (columns.next()) {
-                if ("server_id".equalsIgnoreCase(columns.getString("name"))) {
-                    hasServerId = true;
-                    break;
-                }
-            }
-        }
-
-        if (!hasServerId) {
+        if (!hasColumn(connection, "tracks", "server_id")) {
             try (Statement statement = connection.createStatement()) {
                 statement.executeUpdate(
                         "ALTER TABLE tracks ADD COLUMN server_id INTEGER NOT NULL DEFAULT 0");
             }
         }
+
+        if (!hasColumn(connection, "tracks", "file_name")) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("ALTER TABLE tracks ADD COLUMN file_name TEXT");
+            }
+        }
+    }
+
+    private boolean hasColumn(Connection connection, String table, String column)
+            throws SQLException {
+        try (Statement statement = connection.createStatement();
+             ResultSet columns = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
+            while (columns.next()) {
+                if (column.equalsIgnoreCase(columns.getString("name"))) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private void createTables(Connection connection) throws SQLException {
@@ -463,6 +494,7 @@ public class TrackStorage {
                     duration_ms INTEGER NOT NULL DEFAULT 0,
                     location TEXT NOT NULL,
                     server_id INTEGER NOT NULL DEFAULT 0,
+                    file_name TEXT,
                     position INTEGER NOT NULL
                 )
                 """;
