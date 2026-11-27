@@ -1550,11 +1550,14 @@ public class MainView extends BorderPane {
     }
 
     private static String trackState(Track track) {
+        if (track.getServerId() <= 0) {
+            return "Локально";
+        }
         String location = track.getLocation();
         if (hasText(location) && location.startsWith(CACHE_DIR.toString())) {
             return "Кеш";
         }
-        return track.getServerId() > 0 ? "Сервер" : "Локально";
+        return "Сервер";
     }
 
     private static boolean hasText(String value) {
