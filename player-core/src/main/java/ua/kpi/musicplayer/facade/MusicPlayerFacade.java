@@ -27,6 +27,7 @@ public class MusicPlayerFacade {
     private volatile String currentStreamUrl;
     private Consumer<Boolean> onTrackFinished;
     private long activePlaylistId = -1;
+    private long defaultPlaylistId = -1;
 
     public void addObserver(PlayerObserver observer) {
         if (observer != null) {
@@ -74,6 +75,17 @@ public class MusicPlayerFacade {
         return ensureActivePlaylist();
     }
 
+    public long getDefaultPlaylistId() {
+        if (defaultPlaylistId <= 0) {
+            defaultPlaylistId = storage.getDefaultPlaylistId();
+        }
+        return defaultPlaylistId;
+    }
+
+    public boolean isDefaultPlaylist(long playlistId) {
+        return playlistId == getDefaultPlaylistId();
+    }
+
     public Playlist createPlaylist(String name) {
         Playlist playlist = storage.createPlaylist(name);
         notifyObservers();
@@ -81,6 +93,10 @@ public class MusicPlayerFacade {
     }
 
     public void deletePlaylist(long playlistId) {
+        if (isDefaultPlaylist(playlistId)) {
+            throw new IllegalStateException("Базовий плейлист не можна видалити");
+        }
+
         List<Playlist> playlists = storage.loadPlaylists();
         if (playlists.size() <= 1) {
             throw new IllegalStateException("Не можна видалити єдиний плейлист");
@@ -115,18 +131,53 @@ public class MusicPlayerFacade {
             return activePlaylistId;
         }
 
-        List<Playlist> playlists = storage.loadPlaylists();
-        if (playlists.isEmpty()) {
-            activePlaylistId = storage.createPlaylist(TrackStorage.DEFAULT_PLAYLIST_NAME).getId();
-        } else {
-            activePlaylistId = playlists.get(0).getId();
-        }
+        activePlaylistId = storage.getDefaultPlaylistId();
         return activePlaylistId;
     }
 
     public void addTracksAndSave(List<Track> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return;
+        }
+
         queue.addTracks(tracks);
-        storage.saveTracks(ensureActivePlaylist(), queue.getTracks());
+        long defaultId = getDefaultPlaylistId();
+        storage.addTracksToPlaylist(defaultId, tracks);
+        if (ensureActivePlaylist() != defaultId) {
+            storage.addTracksToPlaylist(activePlaylistId, tracks);
+        }
+        notifyObservers();
+    }
+
+    public void addTracksToPlaylist(long playlistId, List<Track> tracks) {
+        if (playlistId <= 0 || tracks == null || tracks.isEmpty()) {
+            return;
+        }
+
+        storage.addTracksToPlaylist(playlistId, tracks);
+        notifyObservers();
+    }
+
+    public void moveTracksToPlaylist(long targetPlaylistId, List<Track> tracks) {
+        if (targetPlaylistId <= 0 || tracks == null || tracks.isEmpty()) {
+            return;
+        }
+
+        long sourcePlaylistId = ensureActivePlaylist();
+        if (targetPlaylistId == sourcePlaylistId) {
+            return;
+        }
+
+        storage.addTracksToPlaylist(targetPlaylistId, tracks);
+        if (sourcePlaylistId != getDefaultPlaylistId()) {
+            boolean currentRemoved = tracks.contains(queue.getCurrentTrack());
+            storage.removeTracksFromPlaylist(sourcePlaylistId, tracks);
+            queue.removeTracks(tracks);
+            if (currentRemoved) {
+                currentStreamUrl = null;
+                player.stop();
+            }
+        }
         notifyObservers();
     }
 

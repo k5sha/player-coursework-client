@@ -46,6 +46,14 @@ public class TrackStorage {
         return playlists;
     }
 
+    public long getDefaultPlaylistId() {
+        try (Connection connection = connect()) {
+            return findDefaultPlaylistId(connection);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося визначити базовий плейлист", e);
+        }
+    }
+
     public Playlist createPlaylist(String name) {
         String playlistName = name == null ? "" : name.trim();
         if (playlistName.isEmpty()) {
@@ -77,6 +85,10 @@ public class TrackStorage {
 
     public void deletePlaylist(long playlistId) {
         try (Connection connection = connect()) {
+            if (playlistId == findDefaultPlaylistId(connection)) {
+                throw new IllegalStateException("Базовий плейлист не можна видалити");
+            }
+
             connection.setAutoCommit(false);
 
             try {
@@ -137,6 +149,7 @@ public class TrackStorage {
         }
 
         try (Connection connection = connect()) {
+            long defaultPlaylistId = findDefaultPlaylistId(connection);
             connection.setAutoCommit(false);
 
             try {
@@ -146,6 +159,8 @@ public class TrackStorage {
                     deleteLinks.executeUpdate();
                 }
 
+                int defaultPosition = nextTrackPosition(connection, defaultPlaylistId);
+
                 try (PreparedStatement findTrack = connection.prepareStatement(
                         "SELECT id FROM tracks WHERE location = ? LIMIT 1");
                      PreparedStatement insertTrack = connection.prepareStatement(
@@ -153,6 +168,9 @@ public class TrackStorage {
                                      + "VALUES (?, ?, ?, ?, ?, ?)",
                              Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement insertLink = connection.prepareStatement(
+                             "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
+                                     + "VALUES (?, ?, ?)");
+                     PreparedStatement insertDefaultLink = connection.prepareStatement(
                              "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
                                      + "VALUES (?, ?, ?)")) {
                     for (int i = 0; i < tracks.size(); i++) {
@@ -162,13 +180,17 @@ public class TrackStorage {
                             trackId = insertTrack(insertTrack, track, i);
                         }
 
-                        insertLink.setLong(1, playlistId);
-                        insertLink.setLong(2, trackId);
-                        insertLink.setInt(3, i);
-                        insertLink.executeUpdate();
+                        linkTrack(insertLink, playlistId, trackId, i);
+                        if (playlistId != defaultPlaylistId
+                                && linkTrack(insertDefaultLink, defaultPlaylistId, trackId, defaultPosition)) {
+                            defaultPosition++;
+                        }
                     }
                 }
 
+                if (playlistId == defaultPlaylistId) {
+                    deleteTracksNotIn(connection, tracks);
+                }
                 deleteUnusedTracks(connection);
                 connection.commit();
             } catch (SQLException e) {
@@ -177,6 +199,117 @@ public class TrackStorage {
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Не вдалося зберегти треки в базу даних", e);
+        }
+    }
+
+    public void addTracksToPlaylist(long playlistId, List<Track> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return;
+        }
+
+        try (Connection connection = connect()) {
+            long defaultPlaylistId = findDefaultPlaylistId(connection);
+            connection.setAutoCommit(false);
+
+            try {
+                int targetPosition = nextTrackPosition(connection, playlistId);
+                int defaultPosition = nextTrackPosition(connection, defaultPlaylistId);
+
+                try (PreparedStatement findTrack = connection.prepareStatement(
+                        "SELECT id FROM tracks WHERE location = ? LIMIT 1");
+                     PreparedStatement insertTrack = connection.prepareStatement(
+                             "INSERT INTO tracks (title, artist, album, duration_ms, location, position) "
+                                     + "VALUES (?, ?, ?, ?, ?, ?)",
+                             Statement.RETURN_GENERATED_KEYS);
+                     PreparedStatement insertTargetLink = connection.prepareStatement(
+                             "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
+                                     + "VALUES (?, ?, ?)");
+                     PreparedStatement insertDefaultLink = connection.prepareStatement(
+                             "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
+                                     + "VALUES (?, ?, ?)")) {
+                    int trackPosition = 0;
+                    for (Track track : tracks) {
+                        long trackId = findTrackId(findTrack, track);
+                        if (trackId < 0) {
+                            trackId = insertTrack(insertTrack, track, trackPosition++);
+                        }
+
+                        if (playlistId != defaultPlaylistId
+                                && linkTrack(insertDefaultLink, defaultPlaylistId, trackId, defaultPosition)) {
+                            defaultPosition++;
+                        }
+                        if (linkTrack(insertTargetLink, playlistId, trackId, targetPosition)) {
+                            targetPosition++;
+                        }
+                    }
+                }
+
+                connection.commit();
+            } catch (SQLException e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося додати треки до плейлиста", e);
+        }
+    }
+
+    public void removeTracksFromPlaylist(long playlistId, List<Track> tracks) {
+        if (tracks == null || tracks.isEmpty()) {
+            return;
+        }
+
+        try (Connection connection = connect()) {
+            connection.setAutoCommit(false);
+
+            try (PreparedStatement deleteLink = connection.prepareStatement(
+                    "DELETE FROM playlist_tracks WHERE playlist_id = ? "
+                            + "AND track_id IN (SELECT id FROM tracks WHERE location = ?)")) {
+                for (Track track : tracks) {
+                    deleteLink.setLong(1, playlistId);
+                    deleteLink.setString(2, track.getLocation());
+                    deleteLink.executeUpdate();
+                }
+                connection.commit();
+            } catch (SQLException e) {
+                connection.rollback();
+                throw e;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося прибрати треки з плейлиста", e);
+        }
+    }
+
+    private boolean linkTrack(PreparedStatement insertLink, long playlistId, long trackId, int position)
+            throws SQLException {
+        insertLink.setLong(1, playlistId);
+        insertLink.setLong(2, trackId);
+        insertLink.setInt(3, position);
+        return insertLink.executeUpdate() > 0;
+    }
+
+    private void deleteTracksNotIn(Connection connection, List<Track> tracks) throws SQLException {
+        if (tracks.isEmpty()) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("DELETE FROM tracks");
+            }
+            return;
+        }
+
+        StringBuilder sql = new StringBuilder("DELETE FROM tracks WHERE location NOT IN (");
+        for (int i = 0; i < tracks.size(); i++) {
+            if (i > 0) {
+                sql.append(", ");
+            }
+            sql.append('?');
+        }
+        sql.append(')');
+
+        try (PreparedStatement delete = connection.prepareStatement(sql.toString())) {
+            for (int i = 0; i < tracks.size(); i++) {
+                delete.setString(i + 1, tracks.get(i).getLocation());
+            }
+            delete.executeUpdate();
         }
     }
 
@@ -219,6 +352,17 @@ public class TrackStorage {
                      "SELECT COALESCE(MAX(position), -1) + 1 FROM playlists")) {
             resultSet.next();
             return resultSet.getInt(1);
+        }
+    }
+
+    private int nextTrackPosition(Connection connection, long playlistId) throws SQLException {
+        try (PreparedStatement select = connection.prepareStatement(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM playlist_tracks WHERE playlist_id = ?")) {
+            select.setLong(1, playlistId);
+            try (ResultSet resultSet = select.executeQuery()) {
+                resultSet.next();
+                return resultSet.getInt(1);
+            }
         }
     }
 
@@ -276,18 +420,19 @@ public class TrackStorage {
         }
     }
 
-    private void ensureDefaultPlaylist(Connection connection) throws SQLException {
-        long defaultPlaylistId;
-
+    private long findDefaultPlaylistId(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement();
              ResultSet resultSet = statement.executeQuery(
                      "SELECT id FROM playlists ORDER BY position, id LIMIT 1")) {
             if (resultSet.next()) {
-                defaultPlaylistId = resultSet.getLong("id");
-            } else {
-                defaultPlaylistId = insertDefaultPlaylist(connection);
+                return resultSet.getLong("id");
             }
         }
+        return insertDefaultPlaylist(connection);
+    }
+
+    private void ensureDefaultPlaylist(Connection connection) throws SQLException {
+        long defaultPlaylistId = findDefaultPlaylistId(connection);
 
         String migrateSql = "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
                 + "SELECT ?, id, position FROM tracks "

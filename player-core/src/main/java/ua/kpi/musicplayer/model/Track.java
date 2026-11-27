@@ -2,6 +2,8 @@ package ua.kpi.musicplayer.model;
 
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 
+import java.util.Objects;
+
 public class Track {
 
     private String title;
@@ -62,6 +64,28 @@ public class Track {
 
     public String accept(MediaInfoVisitor visitor) {
         return visitor.visitTrack(this);
+    }
+
+    @Override
+    public boolean equals(Object other) {
+        if (this == other) {
+            return true;
+        }
+        if (!(other instanceof Track track)) {
+            return false;
+        }
+        if (location != null || track.location != null) {
+            return Objects.equals(location, track.location);
+        }
+        return Objects.equals(title, track.title) && Objects.equals(artist, track.artist);
+    }
+
+    @Override
+    public int hashCode() {
+        if (location != null) {
+            return location.hashCode();
+        }
+        return Objects.hash(title, artist);
     }
 
     @Override

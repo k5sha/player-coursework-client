@@ -46,6 +46,21 @@ public class PlaybackQueue {
         return removed;
     }
 
+    public void removeTracks(List<Track> tracksToRemove) {
+        if (tracksToRemove == null || tracksToRemove.isEmpty()) {
+            return;
+        }
+
+        Track current = getCurrentTrack();
+        tracks.removeAll(tracksToRemove);
+        if (tracks.isEmpty()) {
+            currentIndex = -1;
+        } else if (current != null) {
+            int index = tracks.indexOf(current);
+            currentIndex = index >= 0 ? index : Math.min(currentIndex, tracks.size() - 1);
+        }
+    }
+
     public void clear() {
         tracks.clear();
         currentIndex = -1;
