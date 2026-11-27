@@ -140,7 +140,8 @@ public class TrackSyncClient {
         }
     }
 
-    public Track uploadTrackFile(Path file, String title, String artist, int durationSeconds) {
+    public Track uploadTrackFile(Path file, String title, String artist, String album,
+                                 int durationSeconds) {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException("Локальний файл треку не знайдено");
         }
@@ -150,6 +151,7 @@ public class TrackSyncClient {
         try {
             writeTextPart(body, boundary, "title", title);
             writeTextPart(body, boundary, "artist", artist);
+            writeTextPart(body, boundary, "album", album);
             writeTextPart(body, boundary, "durationSeconds",
                     String.valueOf(Math.max(0, durationSeconds)));
             writeFilePart(body, boundary, file);

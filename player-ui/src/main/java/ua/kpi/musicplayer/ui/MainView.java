@@ -1009,7 +1009,7 @@ public class MainView extends BorderPane {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Обрати аудіофайли");
         chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
-                "Аудіофайли", "*.mp3", "*.wav", "*.flac", "*.ogg"));
+                "Аудіофайли", "*.mp3", "*.wav", "*.flac", "*.ogg", "*.aiff", "*.au"));
 
         List<File> files = chooser.showOpenMultipleDialog(getScene().getWindow());
         if (files == null || files.isEmpty()) {
@@ -1217,17 +1217,27 @@ public class MainView extends BorderPane {
     }
 
     private void playTrack(int index) {
-        try {
+        setStatus("Завантаження треку...");
+        playPauseButton.setDisable(true);
+
+        CompletableFuture.supplyAsync(() -> {
             facade.activateViewedPlaylist();
-            Track track = facade.playTrackAt(index);
+            return facade.playTrackAt(index);
+        }).whenComplete((track, error) -> Platform.runLater(() -> {
+            playPauseButton.setDisable(false);
+
+            if (error != null) {
+                setStatus("Помилка: " + errorMessage(error));
+                return;
+            }
             if (track == null) {
                 setStatus("Спочатку оберіть треки");
                 return;
             }
+
             showPlayingTrack(track);
-        } catch (RuntimeException e) {
-            setStatus("Помилка: " + e.getMessage());
-        }
+            playPauseButton.setText(facade.isPlaying() && !facade.isPaused() ? "[||]" : "[>]");
+        }));
     }
 
     private void showPlayingTrack(Track track) {
@@ -1613,7 +1623,7 @@ public class MainView extends BorderPane {
                 presetStation("SomaFM Drone Zone", "https://ice1.somafm.com/dronezone-128-mp3"),
                 presetStation("SomaFM DEF CON", "https://ice1.somafm.com/defcon-128-mp3"),
                 presetStation("FIP", "https://icecast.radiofrance.fr/fip-midfi.mp3"),
-                presetStation("KEXP 90.3", "https://kexp.streamguys1.com/kexp160.aac"));
+                presetStation("Radio Paradise", "https://stream.radioparadise.com/mp3-128"));
     }
 
     private static RadioStation presetStation(String name, String url) {

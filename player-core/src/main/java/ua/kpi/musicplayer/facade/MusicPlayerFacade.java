@@ -1176,7 +1176,7 @@ public class MusicPlayerFacade {
 
         int durationSeconds = (int) Math.max(0, Math.round(track.getDurationMs() / 1000.0));
         Track uploaded = syncClient.uploadTrackFile(
-                file, track.getTitle(), track.getArtist(), durationSeconds);
+                file, track.getTitle(), track.getArtist(), track.getAlbum(), durationSeconds);
         track.setServerId(uploaded.getServerId());
         track.setFileName(uploaded.getFileName());
         track.setLocalOnly(false);
