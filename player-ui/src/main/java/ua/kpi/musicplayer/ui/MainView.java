@@ -249,12 +249,16 @@ public class MainView extends BorderPane {
         repeatButton.setOnAction(event -> {
             facade.cycleRepeatMode();
             updateModeControls();
-            setStatus("Режим повтору: " + repeatModeText());
+            setStatus(facade.getRepeatMode() == PlaybackQueue.RepeatMode.OFF
+                    ? "Повтор вимкнено"
+                    : "Повтор: " + repeatModeText() + " — перемішування вимкнено");
         });
         shuffleButton.setOnAction(event -> {
             facade.toggleShuffle();
             updateModeControls();
-            setStatus("Перемішування: " + (facade.isShuffle() ? "увімкнено" : "вимкнено"));
+            setStatus(facade.isShuffle()
+                    ? "Перемішування увімкнено — повтор вимкнено"
+                    : "Перемішування вимкнено");
         });
 
         progressBarLabel.getStyleClass().add("progress-bar-text");
@@ -532,7 +536,7 @@ public class MainView extends BorderPane {
 
     private TableColumn<IndexedTrack, String> createTrackStateColumn() {
         TableColumn<IndexedTrack, String> column = new TableColumn<>("Стан");
-        column.setPrefWidth(78);
+        column.setPrefWidth(90);
         column.setSortable(false);
         column.setReorderable(false);
         column.setCellValueFactory(data -> new SimpleStringProperty(
@@ -547,9 +551,9 @@ public class MainView extends BorderPane {
                     return;
                 }
                 setText(value);
-                if ("[CACHE]".equals(value)) {
+                if ("Кеш".equals(value)) {
                     getStyleClass().add("state-cache");
-                } else if ("[SRV]".equals(value)) {
+                } else if ("Сервер".equals(value)) {
                     getStyleClass().add("state-srv");
                 } else {
                     getStyleClass().add("state-loc");
@@ -1416,6 +1420,15 @@ public class MainView extends BorderPane {
     private void updateModeControls() {
         repeatButton.setText("[Повтор: " + repeatModeText() + "]");
         shuffleButton.setText("[Зміш: " + (facade.isShuffle() ? "увімк" : "вимк") + "]");
+        markModeButton(repeatButton, facade.getRepeatMode() != PlaybackQueue.RepeatMode.OFF);
+        markModeButton(shuffleButton, facade.isShuffle());
+    }
+
+    private static void markModeButton(Button button, boolean active) {
+        button.getStyleClass().remove("mode-button-active");
+        if (active) {
+            button.getStyleClass().add("mode-button-active");
+        }
     }
 
     private String repeatModeText() {
@@ -1539,9 +1552,9 @@ public class MainView extends BorderPane {
     private static String trackState(Track track) {
         String location = track.getLocation();
         if (hasText(location) && location.startsWith(CACHE_DIR.toString())) {
-            return "[CACHE]";
+            return "Кеш";
         }
-        return track.getServerId() > 0 ? "[SRV]" : "[LOC]";
+        return track.getServerId() > 0 ? "Сервер" : "Локально";
     }
 
     private static boolean hasText(String value) {

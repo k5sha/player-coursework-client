@@ -99,6 +99,9 @@ public class PlaybackQueue {
 
     public void setRepeatMode(RepeatMode repeatMode) {
         this.repeatMode = repeatMode == null ? RepeatMode.OFF : repeatMode;
+        if (this.repeatMode != RepeatMode.OFF) {
+            shuffle = false;
+        }
     }
 
     public RepeatMode cycleRepeatMode() {
@@ -113,6 +116,9 @@ public class PlaybackQueue {
                 repeatMode = RepeatMode.OFF;
                 break;
         }
+        if (repeatMode != RepeatMode.OFF) {
+            shuffle = false;
+        }
         return repeatMode;
     }
 
@@ -122,10 +128,16 @@ public class PlaybackQueue {
 
     public void setShuffle(boolean shuffle) {
         this.shuffle = shuffle;
+        if (shuffle) {
+            repeatMode = RepeatMode.OFF;
+        }
     }
 
     public void toggleShuffle() {
         shuffle = !shuffle;
+        if (shuffle) {
+            repeatMode = RepeatMode.OFF;
+        }
     }
 
     public void next() {
