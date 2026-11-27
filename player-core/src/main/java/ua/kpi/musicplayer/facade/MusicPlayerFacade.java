@@ -21,9 +21,11 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -43,6 +45,13 @@ public class MusicPlayerFacade {
     private Consumer<Boolean> onTrackFinished;
     private long activePlaylistId = -1;
     private long defaultPlaylistId = -1;
+
+    /**
+     * Локальний шлях файлу (у тому числі шлях у кеші) → шлях, під яким трек
+     * зберігається на сервері. Потрібно, щоб у плейлистах на сервері не
+     * осідали локальні та кеш-шляхи конкретного клієнта.
+     */
+    private final Map<String, String> serverLocationByLocal = new HashMap<>();
 
     public void addObserver(PlayerObserver observer) {
         if (observer != null) {
@@ -219,6 +228,7 @@ public class MusicPlayerFacade {
         }
 
         storage.saveTracks(ensureActivePlaylist(), queue.getTracks());
+        serverLocationByLocal.remove(removed.getLocation());
         deleteRemoteTrack(removed);
         notifyObservers();
         return removed;
@@ -462,18 +472,14 @@ public class MusicPlayerFacade {
     /**
      * Синхронізує плейлисти з сервером. Якщо сервер недоступний, повертає
      * результат з ознакою недоступності, не порушуючи локальну роботу.
+     * Плейлисти надсилаються лише тоді, коли їхній вміст відрізняється від
+     * серверного, тому повторна синхронізація не створює дублів.
      */
     public PlaylistSyncResult synchronizePlaylists() {
         try {
             List<PlaylistSyncClient.RemotePlaylist> remotePlaylists =
                     playlistSyncClient.fetchPlaylists();
             List<Playlist> localPlaylists = storage.loadPlaylists();
-
-            int uploaded = 0;
-            for (Playlist playlist : localPlaylists) {
-                playlistSyncClient.uploadPlaylist(playlist.getName(), locationsOf(playlist.getId()));
-                uploaded++;
-            }
 
             int downloaded = 0;
             for (PlaylistSyncClient.RemotePlaylist remote : remotePlaylists) {
@@ -486,15 +492,32 @@ public class MusicPlayerFacade {
 
                 List<String> knownLocations = locationsOf(local.getId());
                 List<Track> missingTracks = new ArrayList<>();
-                for (String location : remote.getLocations()) {
-                    if (location != null && !location.isBlank()
-                            && !knownLocations.contains(location)) {
-                        missingTracks.add(new Track(null, null, 0, location));
-                        knownLocations.add(location);
+                for (String remoteLocation : remote.getLocations()) {
+                    String location = localLocationOf(remoteLocation, knownLocations);
+                    if (location == null || location.isBlank()
+                            || knownLocations.contains(location)) {
+                        continue;
                     }
+                    // Не імпортуємо посилання на трек, якого немає на сервері
+                    // і якого немає локально, щоб у плейлисті не було «мертвих» записів.
+                    if (!serverLocationByLocal.containsValue(remoteLocation)
+                            && !isLocalFile(location)) {
+                        continue;
+                    }
+                    missingTracks.add(new Track(null, null, 0, location));
+                    knownLocations.add(location);
                 }
                 if (!missingTracks.isEmpty()) {
                     storage.addTracksToPlaylist(local.getId(), missingTracks);
+                }
+            }
+
+            int uploaded = 0;
+            for (Playlist playlist : localPlaylists) {
+                List<String> locations = serverLocationsOf(playlist.getId());
+                if (!sameLocations(remoteLocationsOf(remotePlaylists, playlist.getName()), locations)) {
+                    playlistSyncClient.uploadPlaylist(playlist.getName(), locations);
+                    uploaded++;
                 }
             }
 
@@ -513,6 +536,62 @@ public class MusicPlayerFacade {
             }
         }
         return locations;
+    }
+
+    private List<String> serverLocationsOf(long playlistId) {
+        List<String> locations = new ArrayList<>();
+        for (String localLocation : locationsOf(playlistId)) {
+            String serverLocation = serverLocationByLocal.getOrDefault(localLocation, localLocation);
+            if (!locations.contains(serverLocation)) {
+                locations.add(serverLocation);
+            }
+        }
+        return locations;
+    }
+
+    private String localLocationOf(String serverLocation, List<String> preferredLocations) {
+        if (preferredLocations.contains(serverLocation)) {
+            return serverLocation;
+        }
+
+        String found = null;
+        for (Map.Entry<String, String> entry : serverLocationByLocal.entrySet()) {
+            if (!entry.getValue().equals(serverLocation)) {
+                continue;
+            }
+            if (preferredLocations.contains(entry.getKey())) {
+                return entry.getKey();
+            }
+            if (found == null) {
+                found = entry.getKey();
+            }
+        }
+        return found == null ? serverLocation : found;
+    }
+
+    private void rememberServerLocation(Track track, String serverLocation) {
+        if (track == null || serverLocation == null || serverLocation.isBlank()
+                || track.getLocation() == null || track.getLocation().isBlank()) {
+            return;
+        }
+        serverLocationByLocal.put(track.getLocation(), serverLocation);
+    }
+
+    private static List<String> remoteLocationsOf(
+            List<PlaylistSyncClient.RemotePlaylist> playlists, String name) {
+        for (PlaylistSyncClient.RemotePlaylist remote : playlists) {
+            if (remote.getName().equals(name)) {
+                return remote.getLocations();
+            }
+        }
+        return null;
+    }
+
+    private static boolean sameLocations(List<String> serverLocations, List<String> localLocations) {
+        if (serverLocations == null) {
+            return false;
+        }
+        return new HashSet<>(serverLocations).equals(new HashSet<>(localLocations));
     }
 
     private static Playlist findPlaylistByName(List<Playlist> playlists, String name) {
@@ -540,6 +619,16 @@ public class MusicPlayerFacade {
     public TrackSyncResult synchronizeTracks() {
         List<Track> remoteTracks = syncClient.fetchTracks();
         List<Track> localTracks = storage.loadTracks(getDefaultPlaylistId());
+        serverLocationByLocal.clear();
+
+        // Треки в черзі — окремі об'єкти, тому запам'ятовуємо їх за початковим
+        // шляхом, щоб після кешування оновити і їх (інакше UI показує застарілі дані).
+        Map<String, Track> queuedByLocation = new HashMap<>();
+        for (Track queued : queue.getTracks()) {
+            if (queued.getLocation() != null) {
+                queuedByLocation.put(queued.getLocation(), queued);
+            }
+        }
 
         Set<Long> remoteServerIds = new HashSet<>();
         for (Track remote : remoteTracks) {
@@ -556,15 +645,17 @@ public class MusicPlayerFacade {
             if (track.getServerId() > 0 && !remoteServerIds.contains(track.getServerId())) {
                 track.setServerId(0);
                 storage.clearTrackServerId(track.getLocation());
+                copyToQueued(queuedByLocation, track.getLocation(), track);
                 clearedTracks.add(track);
                 cleared++;
             }
         }
 
-        // Синхронізація лише додає дані: локальні треки надсилаються, якщо їх немає
-        // на сервері, а серверні треки ніколи не видаляються. Тому видалення на
+        // Синхронізація лише додає дані: локальні файли надсилаються на сервер,
+        // а серверні треки завантажуються в локальний кеш. Тому видалення на
         // іншому клієнті не затирає треки цього клієнта.
         int uploaded = 0;
+        int failed = 0;
         for (Track track : localTracks) {
             if (clearedTracks.contains(track)) {
                 continue;
@@ -572,32 +663,65 @@ public class MusicPlayerFacade {
 
             Track remote = findMatchingTrack(remoteTracks, track);
             if (remote == null) {
-                syncClient.uploadTrack(track);
-                uploaded++;
-                storage.updateTrackServerId(track.getLocation(), track.getServerId());
-            } else {
-                track.setServerId(remote.getServerId());
-                track.setFileName(remote.getFileName());
-                storage.updateTrackServerId(track.getLocation(), track.getServerId());
-                prepareTrackFile(track);
+                String localLocation = track.getLocation();
+                try {
+                    uploadTrackFile(track);
+                    uploaded++;
+                    copyToQueued(queuedByLocation, localLocation, track);
+                } catch (RuntimeException e) {
+                    failed++;
+                }
+                continue;
             }
+
+            String localLocation = track.getLocation();
+            String serverLocation = remote.getLocation();
+            track.setServerId(remote.getServerId());
+            track.setFileName(remote.getFileName());
+            storage.updateTrackServerId(track.getLocation(), track.getServerId());
+            prepareTrackFile(track);
+            rememberServerLocation(track, serverLocation);
+            copyToQueued(queuedByLocation, localLocation, track);
         }
 
+        // Нові серверні треки одразу кешуються локально. Якщо файл на сервері
+        // відсутній, трек не додаємо, щоб не плодити «мертві» записи в БД.
         List<Track> downloadedTracks = new ArrayList<>();
-        for (Track track : remoteTracks) {
-            if (findMatchingTrack(localTracks, track) == null
-                    && !downloadedTracks.contains(track)) {
-                prepareTrackFile(track);
-                downloadedTracks.add(track);
+        Set<Long> handledRemoteIds = new HashSet<>();
+        for (Track remote : remoteTracks) {
+            if (remote.getServerId() <= 0 || !handledRemoteIds.add(remote.getServerId())
+                    || findMatchingTrack(localTracks, remote) != null) {
+                continue;
             }
+
+            String serverLocation = remote.getLocation();
+            prepareTrackFile(remote);
+            if (!hasLocalFile(remote)) {
+                continue;
+            }
+            rememberServerLocation(remote, serverLocation);
+            downloadedTracks.add(remote);
         }
 
         if (!downloadedTracks.isEmpty()) {
             addTracksAndSave(downloadedTracks);
         }
-        applyServerIds(localTracks);
 
-        return new TrackSyncResult(uploaded, downloadedTracks.size(), cleared);
+        return new TrackSyncResult(uploaded, downloadedTracks.size(), cleared, failed);
+    }
+
+    private static void copyToQueued(Map<String, Track> queuedByLocation,
+                                     String location, Track source) {
+        if (location == null) {
+            return;
+        }
+        Track queued = queuedByLocation.get(location);
+        if (queued == null) {
+            return;
+        }
+        queued.setServerId(source.getServerId());
+        queued.setFileName(source.getFileName());
+        queued.setLocation(source.getLocation());
     }
 
     /**
@@ -628,30 +752,43 @@ public class MusicPlayerFacade {
     }
 
     /**
-     * Якщо локального файлу немає, намагається скачати його з сервера в кеш.
+     * Якщо локального файлу немає, намагається скачати його з сервера в кеш
+     * (~/musicplayer-cache/) і зберегти новий шлях у БД. Повторні виклики
+     * використовують уже наявний кеш без звернення до мережі.
      * Відсутність сервера не перериває роботу — трек лишається зі старим шляхом.
      */
-    private boolean prepareTrackFile(Track track) {
+    private void prepareTrackFile(Track track) {
         String location = track.getLocation();
-        Path localFile = localPath(location);
-        if (localFile != null && Files.isRegularFile(localFile)) {
-            return false;
+        if (hasLocalFile(track)) {
+            return;
         }
         if (track.getServerId() <= 0) {
-            return false;
+            return;
+        }
+
+        String nameHint = track.getFileName();
+        if (nameHint == null || nameHint.isBlank()) {
+            nameHint = location;
         }
 
         try {
-            Path downloaded = syncClient.downloadTrackFile(
-                    track.getServerId(), track.getFileName());
+            Path downloaded = syncClient.downloadTrackFile(track.getServerId(), nameHint);
             track.setLocation(downloaded.toString());
             if (location != null && !location.isBlank()) {
                 storage.updateTrackLocation(location, downloaded.toString());
             }
-            return true;
         } catch (RuntimeException ignored) {
-            return false;
+            // Сервер недоступний — трек лишається зі старим шляхом
         }
+    }
+
+    private static boolean hasLocalFile(Track track) {
+        return track != null && isLocalFile(track.getLocation());
+    }
+
+    private static boolean isLocalFile(String location) {
+        Path file = localPath(location);
+        return file != null && Files.isRegularFile(file);
     }
 
     public long uploadTrackFile(Track track) {
@@ -666,13 +803,13 @@ public class MusicPlayerFacade {
         }
 
         int durationSeconds = (int) Math.max(0, Math.round(track.getDurationMs() / 1000.0));
-        long serverId = syncClient.uploadTrackFile(
+        Track uploaded = syncClient.uploadTrackFile(
                 file, track.getTitle(), track.getArtist(), durationSeconds);
-        if (serverId > 0) {
-            track.setServerId(serverId);
-            storage.updateTrackServerId(track.getLocation(), serverId);
-        }
-        return serverId;
+        track.setServerId(uploaded.getServerId());
+        track.setFileName(uploaded.getFileName());
+        storage.updateTrackServerId(track.getLocation(), uploaded.getServerId());
+        rememberServerLocation(track, uploaded.getLocation());
+        return uploaded.getServerId();
     }
 
     public void deleteTrackFromServer(Track track) {
@@ -683,6 +820,7 @@ public class MusicPlayerFacade {
         syncClient.deleteTrack(track.getServerId());
         track.setServerId(0);
         storage.clearTrackServerId(track.getLocation());
+        serverLocationByLocal.remove(track.getLocation());
     }
 
     private static Path localPath(String location) {
@@ -693,18 +831,6 @@ public class MusicPlayerFacade {
             return Path.of(location);
         } catch (RuntimeException e) {
             return null;
-        }
-    }
-
-    private void applyServerIds(List<Track> tracksWithIds) {
-        for (Track queued : queue.getTracks()) {
-            int index = tracksWithIds.indexOf(queued);
-            if (index >= 0) {
-                Track source = tracksWithIds.get(index);
-                queued.setServerId(source.getServerId());
-                queued.setFileName(source.getFileName());
-                queued.setLocation(source.getLocation());
-            }
         }
     }
 }

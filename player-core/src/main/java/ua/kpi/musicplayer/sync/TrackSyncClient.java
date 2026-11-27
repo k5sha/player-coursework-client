@@ -50,21 +50,6 @@ public class TrackSyncClient {
         return parseTracks(response.body());
     }
 
-    public void uploadTrack(Track track) {
-        HttpRequest request = requestBuilder("/tracks")
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(toJson(track), StandardCharsets.UTF_8))
-                .build();
-        HttpResponse<String> response = send(request);
-        checkStatus(response, 200, 201);
-
-        // Сервер повертає створений трек разом з id — запам'ятовуємо його для видалення
-        long serverId = readLong(response.body(), "id");
-        if (serverId > 0) {
-            track.setServerId(serverId);
-        }
-    }
-
     public void deleteTrack(long id) {
         HttpRequest request = requestBuilder("/tracks/" + id).DELETE().build();
         HttpResponse<String> response = send(request);
@@ -74,14 +59,15 @@ public class TrackSyncClient {
 
     /**
      * Завантажує аудіофайл треку в локальний кеш плеєра.
+     * Ім'я файлу використовується лише для вибору розширення.
      * Повертає шлях до вже наявного або щойно скачаного файлу.
      */
-    public Path downloadTrackFile(long id, String fileName) {
+    public Path downloadTrackFile(long id, String fileNameHint) {
         if (id <= 0) {
             throw new IllegalArgumentException("Некоректний id треку");
         }
 
-        Path target = CACHE_DIR.resolve("track-" + id + fileExtension(fileName));
+        Path target = CACHE_DIR.resolve("track-" + id + fileExtension(fileNameHint));
         try {
             if (Files.isRegularFile(target) && Files.size(target) > 0) {
                 return target;
@@ -125,9 +111,9 @@ public class TrackSyncClient {
 
     /**
      * Завантажує локальний аудіофайл на сервер через POST /tracks/upload.
-     * Повертає id створеного на сервері треку.
+     * Повертає створений сервером трек (id, шлях на сервері та ім'я збереженого файлу).
      */
-    public long uploadTrackFile(Path file, String title, String artist, int durationSeconds) {
+    public Track uploadTrackFile(Path file, String title, String artist, int durationSeconds) {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException("Локальний файл треку не знайдено");
         }
@@ -152,7 +138,12 @@ public class TrackSyncClient {
                 .build();
         HttpResponse<String> response = send(request);
         checkStatus(response, 200, 201);
-        return readLong(response.body(), "id");
+
+        Track uploaded = parseTrack(response.body());
+        if (uploaded == null || uploaded.getServerId() <= 0) {
+            throw new IllegalStateException("Сервер не повернув id створеного треку");
+        }
+        return uploaded;
     }
 
     private static void writeTextPart(ByteArrayOutputStream body, String boundary,
@@ -177,9 +168,11 @@ public class TrackSyncClient {
 
     private static String fileExtension(String fileName) {
         if (fileName != null) {
-            int dot = fileName.lastIndexOf('.');
-            if (dot > 0 && dot < fileName.length() - 1) {
-                String extension = fileName.substring(dot);
+            int separator = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
+            String name = separator >= 0 ? fileName.substring(separator + 1) : fileName;
+            int dot = name.lastIndexOf('.');
+            if (dot > 0 && dot < name.length() - 1) {
+                String extension = name.substring(dot);
                 if (extension.matches("\\.[A-Za-z0-9]{1,8}")) {
                     return extension.toLowerCase(Locale.ROOT);
                 }
@@ -214,14 +207,6 @@ public class TrackSyncClient {
         throw new IllegalStateException("Сервер повернув код " + response.statusCode());
     }
 
-    private static String toJson(Track track) {
-        return "{\"title\":" + quote(track.getTitle())
-                + ",\"artist\":" + quote(track.getArtist())
-                + ",\"album\":" + quote(track.getAlbum())
-                + ",\"durationMs\":" + track.getDurationMs()
-                + ",\"location\":" + quote(track.getLocation()) + "}";
-    }
-
     static String quote(String value) {
         if (value == null) {
             return "null";
@@ -252,26 +237,33 @@ public class TrackSyncClient {
     private static List<Track> parseTracks(String json) {
         List<Track> tracks = new ArrayList<>();
         for (String object : splitObjects(json)) {
-            long serverId = readLong(object, "id");
-            String location = readString(object, "location");
-            String fileName = readString(object, "fileName");
-            if (serverId <= 0
-                    && (location == null || location.isBlank())
-                    && (fileName == null || fileName.isBlank())) {
-                continue;
+            Track track = parseTrack(object);
+            if (track != null) {
+                tracks.add(track);
             }
-
-            Track track = new Track();
-            track.setServerId(serverId);
-            track.setTitle(readString(object, "title"));
-            track.setArtist(readString(object, "artist"));
-            track.setAlbum(readString(object, "album"));
-            track.setDurationMs(readLong(object, "durationMs"));
-            track.setLocation(location == null ? "" : location);
-            track.setFileName(fileName);
-            tracks.add(track);
         }
         return tracks;
+    }
+
+    private static Track parseTrack(String object) {
+        long serverId = readLong(object, "id");
+        String location = readString(object, "location");
+        String fileName = readString(object, "fileName");
+        if (serverId <= 0
+                && (location == null || location.isBlank())
+                && (fileName == null || fileName.isBlank())) {
+            return null;
+        }
+
+        Track track = new Track();
+        track.setServerId(serverId);
+        track.setTitle(readString(object, "title"));
+        track.setArtist(readString(object, "artist"));
+        track.setAlbum(readString(object, "album"));
+        track.setDurationMs(readLong(object, "durationMs"));
+        track.setLocation(location == null ? "" : location);
+        track.setFileName(fileName);
+        return track;
     }
 
     static List<String> splitObjects(String json) {

@@ -741,15 +741,14 @@ public class MainView extends StackPane {
         statusLabel.setText("Синхронізація з сервером...");
 
         CompletableFuture.supplyAsync(() -> {
-            PlaylistSyncResult playlists = facade.synchronizePlaylists();
+            // Спершу треки: щойно закешовані файли дають актуальні шляхи для плейлистів
             TrackSyncResult tracks = null;
-            if (playlists.isServerAvailable()) {
-                try {
-                    tracks = facade.synchronizeTracks();
-                } catch (RuntimeException ignored) {
-                    // Сервер зник під час синхронізації — працюємо локально
-                }
+            try {
+                tracks = facade.synchronizeTracks();
+            } catch (RuntimeException ignored) {
+                // Сервер недоступний — плейлисти теж не синхронізуються
             }
+            PlaylistSyncResult playlists = facade.synchronizePlaylists();
             return new SyncOutcome(playlists, tracks);
         }).whenComplete((outcome, error) -> Platform.runLater(() -> {
             syncButton.setDisable(false);
@@ -760,29 +759,47 @@ public class MainView extends StackPane {
 
             refreshPlaylistViews();
             refreshTrackList(true);
-            if (!outcome.playlists().isServerAvailable() || outcome.tracks() == null) {
-                statusLabel.setText("Сервер недоступний — працюємо локально");
-                return;
-            }
-
-            boolean noChanges = outcome.tracks().getUploaded() == 0
-                    && outcome.tracks().getDownloaded() == 0
-                    && outcome.tracks().getCleared() == 0
-                    && outcome.playlists().getUploaded() == 0
-                    && outcome.playlists().getDownloaded() == 0;
-            statusLabel.setText(noChanges
-                    ? "Синхронізовано — без змін"
-                    : "Синхронізовано: треки +" + outcome.tracks().getUploaded()
-                    + "/-" + outcome.tracks().getDownloaded()
-                    + ", плейлисти +" + outcome.playlists().getUploaded()
-                    + "/-" + outcome.playlists().getDownloaded()
-                    + (outcome.tracks().getCleared() > 0
-                    ? ", відсутні на сервері: " + outcome.tracks().getCleared()
-                    : ""));
+            statusLabel.setText(syncSummary(outcome));
         }));
     }
 
     private record SyncOutcome(PlaylistSyncResult playlists, TrackSyncResult tracks) {
+    }
+
+    private static String syncSummary(SyncOutcome outcome) {
+        TrackSyncResult tracks = outcome.tracks();
+        PlaylistSyncResult playlists = outcome.playlists();
+
+        if (tracks == null && !playlists.isServerAvailable()) {
+            return "Сервер недоступний — працюємо локально";
+        }
+
+        List<String> parts = new ArrayList<>();
+        if (tracks == null) {
+            parts.add("треки не синхронізовано");
+        } else {
+            addCount(parts, "надіслано треків", tracks.getUploaded());
+            addCount(parts, "отримано треків", tracks.getDownloaded());
+            addCount(parts, "немає на сервері", tracks.getCleared());
+            addCount(parts, "з помилкою", tracks.getFailed());
+        }
+
+        if (playlists.isServerAvailable()) {
+            addCount(parts, "надіслано плейлистів", playlists.getUploaded());
+            addCount(parts, "створено плейлистів", playlists.getDownloaded());
+        } else {
+            parts.add("плейлисти не синхронізовано");
+        }
+
+        return parts.isEmpty()
+                ? "Синхронізовано — без змін"
+                : "Синхронізовано: " + String.join("; ", parts);
+    }
+
+    private static void addCount(List<String> parts, String label, int count) {
+        if (count > 0) {
+            parts.add(label + ": " + count);
+        }
     }
 
     private void addSelectedTracksToPlaylist(Playlist target) {
