@@ -16,6 +16,7 @@ public class Track {
     private String location;
     private String fileName;
     private long serverId;
+    private boolean localOnly;
 
     public Track() {
     }
@@ -81,6 +82,14 @@ public class Track {
 
     public void setServerId(long serverId) {
         this.serverId = serverId;
+    }
+
+    public boolean isLocalOnly() {
+        return localOnly;
+    }
+
+    public void setLocalOnly(boolean localOnly) {
+        this.localOnly = localOnly;
     }
 
     public String accept(MediaInfoVisitor visitor) {

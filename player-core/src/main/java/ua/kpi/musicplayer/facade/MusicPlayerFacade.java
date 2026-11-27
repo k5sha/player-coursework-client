@@ -18,13 +18,12 @@ import ua.kpi.musicplayer.sync.TrackSyncClient;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
 import ua.kpi.musicplayer.sync.TrackUploadResult;
 
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -226,8 +225,26 @@ public class MusicPlayerFacade {
         storage.saveTracks(ensureActivePlaylist(), queue.getTracks());
         serverLocationByLocal.remove(removed.getLocation());
         deleteRemoteTrack(removed);
+        deleteUnusedCacheFile(removed);
         notifyObservers();
         return removed;
+    }
+
+    private void deleteUnusedCacheFile(Track track) {
+        String location = track.getLocation();
+        if (!TrackSyncClient.isCacheFile(location) || storage.isTrackLocationUsed(location)) {
+            return;
+        }
+
+        Path file = localPath(location);
+        if (file == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(file);
+        } catch (IOException ignored) {
+            // Файл зайнятий або вже видалений — кеш лишається на диску
+        }
     }
 
     private void deleteRemoteTrack(Track track) {
@@ -715,24 +732,22 @@ public class MusicPlayerFacade {
         }
 
         int cleared = 0;
-        Set<Track> clearedTracks = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Track track : localTracks) {
             if (track.getServerId() > 0 && !remoteServerIds.contains(track.getServerId())) {
                 track.setServerId(0);
+                track.setLocalOnly(true);
                 storage.clearTrackServerId(track.getLocation());
+                storage.updateTrackLocalOnly(track.getLocation(), true);
                 copyToQueued(queuedByLocation, track.getLocation(), track);
-                clearedTracks.add(track);
                 cleared++;
             }
         }
         int uploaded = 0;
         int failed = 0;
         for (Track track : localTracks) {
-            boolean clearedTrack = clearedTracks.contains(track);
             Track remote = findMatchingTrack(remoteTracks, track);
             if (remote == null) {
-                // Треки, видалені на сервері, повторно не завантажуємо
-                if (clearedTrack) {
+                if (track.isLocalOnly()) {
                     continue;
                 }
                 String localLocation = track.getLocation();
@@ -803,6 +818,7 @@ public class MusicPlayerFacade {
             return;
         }
         queued.setServerId(source.getServerId());
+        queued.setLocalOnly(source.isLocalOnly());
         queued.setFileName(source.getFileName());
         queued.setLocation(source.getLocation());
         queued.setTitle(source.getTitle());
@@ -831,7 +847,7 @@ public class MusicPlayerFacade {
         int failed = 0;
 
         for (Track track : tracks) {
-            if (track.getServerId() > 0) {
+            if (track.getServerId() > 0 || track.isLocalOnly()) {
                 skipped++;
                 continue;
             }
@@ -922,7 +938,9 @@ public class MusicPlayerFacade {
                 file, track.getTitle(), track.getArtist(), durationSeconds);
         track.setServerId(uploaded.getServerId());
         track.setFileName(uploaded.getFileName());
+        track.setLocalOnly(false);
         storage.updateTrackServerId(track.getLocation(), uploaded.getServerId());
+        storage.updateTrackLocalOnly(track.getLocation(), false);
         rememberServerLocation(track, uploaded.getLocation());
         return uploaded.getServerId();
     }
@@ -933,9 +951,24 @@ public class MusicPlayerFacade {
         }
 
         syncClient.deleteTrack(track.getServerId());
+        markTrackLocal(track);
+    }
+
+    private void markTrackLocal(Track track) {
+        String location = track.getLocation();
+        serverLocationByLocal.remove(location);
+
         track.setServerId(0);
-        storage.clearTrackServerId(track.getLocation());
-        serverLocationByLocal.remove(track.getLocation());
+        track.setLocalOnly(true);
+        for (Track queued : queue.getTracks()) {
+            if (queued != track && location != null && location.equals(queued.getLocation())) {
+                queued.setServerId(0);
+                queued.setLocalOnly(true);
+            }
+        }
+
+        storage.clearTrackServerId(location);
+        storage.updateTrackLocalOnly(location, true);
     }
 
     private static Path localPath(String location) {

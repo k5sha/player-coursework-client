@@ -118,7 +118,7 @@ public class TrackStorage {
     public List<Track> loadTracks(long playlistId) {
         List<Track> tracks = new ArrayList<>();
         String sql = "SELECT tracks.title, tracks.artist, tracks.album, tracks.duration_ms, "
-                + "tracks.location, tracks.file_name, tracks.server_id FROM tracks "
+                + "tracks.location, tracks.file_name, tracks.server_id, tracks.local_only FROM tracks "
                 + "JOIN playlist_tracks ON playlist_tracks.track_id = tracks.id "
                 + "WHERE playlist_tracks.playlist_id = ? ORDER BY playlist_tracks.position";
 
@@ -135,6 +135,7 @@ public class TrackStorage {
                     track.setLocation(resultSet.getString("location"));
                     track.setFileName(resultSet.getString("file_name"));
                     track.setServerId(resultSet.getLong("server_id"));
+                    track.setLocalOnly(resultSet.getInt("local_only") != 0);
                     tracks.add(track);
                 }
             }
@@ -213,6 +214,54 @@ public class TrackStorage {
         }
     }
 
+    public void updateTrackLocalOnly(String location, boolean localOnly) {
+        if (location == null || location.isBlank()) {
+            return;
+        }
+
+        String sql = "UPDATE tracks SET local_only = ? WHERE location = ?";
+        try (Connection connection = connect();
+             PreparedStatement update = connection.prepareStatement(sql)) {
+            update.setInt(1, localOnly ? 1 : 0);
+            update.setString(2, location);
+            update.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося оновити позначку локального треку", e);
+        }
+    }
+
+    public boolean isTrackLocationUsed(String location) {
+        if (location == null || location.isBlank()) {
+            return false;
+        }
+
+        String sql = "SELECT COUNT(*) FROM tracks WHERE location = ?";
+        try (Connection connection = connect();
+             PreparedStatement select = connection.prepareStatement(sql)) {
+            select.setString(1, location);
+            try (ResultSet resultSet = select.executeQuery()) {
+                return resultSet.next() && resultSet.getInt(1) > 0;
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося перевірити використання треку", e);
+        }
+    }
+
+    public void removeTrack(String location) {
+        if (location == null || location.isBlank()) {
+            return;
+        }
+
+        String sql = "DELETE FROM tracks WHERE location = ?";
+        try (Connection connection = connect();
+             PreparedStatement delete = connection.prepareStatement(sql)) {
+            delete.setString(1, location);
+            delete.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося видалити трек з бази даних", e);
+        }
+    }
+
     public void saveTracks(long playlistId, List<Track> tracks) {
         if (tracks == null) {
             return;
@@ -234,8 +283,8 @@ public class TrackStorage {
                 try (PreparedStatement findTrack = connection.prepareStatement(
                         "SELECT id FROM tracks WHERE location = ? LIMIT 1");
                      PreparedStatement insertTrack = connection.prepareStatement(
-                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, position) "
-                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, local_only, position) "
+                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                              Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement insertLink = connection.prepareStatement(
                              "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
@@ -288,8 +337,8 @@ public class TrackStorage {
                 try (PreparedStatement findTrack = connection.prepareStatement(
                         "SELECT id FROM tracks WHERE location = ? LIMIT 1");
                      PreparedStatement insertTrack = connection.prepareStatement(
-                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, position) "
-                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                             "INSERT INTO tracks (title, artist, album, duration_ms, location, server_id, file_name, local_only, position) "
+                                     + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                              Statement.RETURN_GENERATED_KEYS);
                      PreparedStatement insertTargetLink = connection.prepareStatement(
                              "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) "
@@ -399,7 +448,8 @@ public class TrackStorage {
         insertTrack.setString(5, track.getLocation());
         insertTrack.setLong(6, track.getServerId());
         insertTrack.setString(7, track.getFileName());
-        insertTrack.setInt(8, position);
+        insertTrack.setInt(8, track.isLocalOnly() ? 1 : 0);
+        insertTrack.setInt(9, position);
         insertTrack.executeUpdate();
 
         try (ResultSet keys = insertTrack.getGeneratedKeys()) {
@@ -469,6 +519,13 @@ public class TrackStorage {
                 statement.executeUpdate("ALTER TABLE tracks ADD COLUMN file_name TEXT");
             }
         }
+
+        if (!hasColumn(connection, "tracks", "local_only")) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate(
+                        "ALTER TABLE tracks ADD COLUMN local_only INTEGER NOT NULL DEFAULT 0");
+            }
+        }
     }
 
     private boolean hasColumn(Connection connection, String table, String column)
@@ -495,6 +552,7 @@ public class TrackStorage {
                     location TEXT NOT NULL,
                     server_id INTEGER NOT NULL DEFAULT 0,
                     file_name TEXT,
+                    local_only INTEGER NOT NULL DEFAULT 0,
                     position INTEGER NOT NULL
                 )
                 """;

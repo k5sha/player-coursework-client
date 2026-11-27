@@ -51,6 +51,7 @@ import ua.kpi.musicplayer.observer.PlayerState;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
 import ua.kpi.musicplayer.sync.PlaylistSyncResult;
+import ua.kpi.musicplayer.sync.TrackSyncClient;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 import ua.kpi.musicplayer.visitor.SummaryMediaVisitor;
@@ -73,8 +74,6 @@ public class MainView extends BorderPane {
 
     private static final Path STATE_FILE =
             Path.of(System.getProperty("user.home"), "musicplayer-state.properties");
-    private static final Path CACHE_DIR =
-            Path.of(System.getProperty("user.home"), "musicplayer-cache");
     private static final int BAR_WIDTH = 32;
 
     private final MusicPlayerFacade facade;
@@ -1022,7 +1021,11 @@ public class MainView extends BorderPane {
                         setStatus("Сервер: " + errorMessage(error));
                         return;
                     }
-                    trackTable.refresh();
+                    refreshTrackRows(false);
+                    if (!facade.isPlaying()) {
+                        updateNowPlayingFromQueue();
+                    }
+                    updateSeekControls();
                     setStatus("Видалено з сервера #" + serverId + ": " + track);
                 }));
     }
@@ -1553,11 +1556,7 @@ public class MainView extends BorderPane {
         if (track.getServerId() <= 0) {
             return "Локально";
         }
-        String location = track.getLocation();
-        if (hasText(location) && location.startsWith(CACHE_DIR.toString())) {
-            return "Кеш";
-        }
-        return "Сервер";
+        return TrackSyncClient.isCacheFile(track.getLocation()) ? "Кеш" : "Сервер";
     }
 
     private static boolean hasText(String value) {

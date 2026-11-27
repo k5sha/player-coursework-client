@@ -40,6 +40,17 @@ public class TrackSyncClient {
         this.apiBase = base.endsWith("/") ? base.substring(0, base.length() - 1) : base;
     }
 
+    public static boolean isCacheFile(String location) {
+        if (location == null || location.isBlank()) {
+            return false;
+        }
+        try {
+            return Path.of(location).startsWith(CACHE_DIR);
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
     public List<Track> fetchTracks() {
         HttpRequest request = requestBuilder("/tracks").GET().build();
         HttpResponse<String> response = send(request);
