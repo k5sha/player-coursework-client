@@ -33,6 +33,7 @@ import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
 import javafx.scene.input.KeyCode;
 import javafx.scene.input.KeyEvent;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
@@ -68,6 +69,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 public class MainView extends BorderPane {
@@ -515,6 +517,18 @@ public class MainView extends BorderPane {
         });
 
         trackTable.setContextMenu(createTrackContextMenu());
+        trackTable.addEventFilter(MouseEvent.MOUSE_PRESSED, event -> {
+            if (!event.isSecondaryButtonDown()) {
+                return;
+            }
+            Node node = event.getPickResult() == null
+                    ? null : event.getPickResult().getIntersectedNode();
+            TableRow<?> row = findTableRow(node);
+            if (row != null && !row.isEmpty()
+                    && trackTable.getSelectionModel().isSelected(row.getIndex())) {
+                event.consume();
+            }
+        });
         trackTable.setOnContextMenuRequested(event -> {
             contextTrackIndex = -1;
             Node node = event.getPickResult() == null
@@ -599,11 +613,11 @@ public class MainView extends BorderPane {
         Menu moveMenu = new Menu("Перенести в плейлист");
 
         MenuItem uploadItem = new MenuItem("Завантажити на сервер");
-        uploadItem.setOnAction(event -> uploadTrack(contextTrack()));
+        uploadItem.setOnAction(event -> uploadSelectedTracks());
 
         MenuItem deleteFromServerItem = new MenuItem("Видалити з сервера");
         deleteFromServerItem.getStyleClass().add("danger-menu-item");
-        deleteFromServerItem.setOnAction(event -> deleteTrackFromServer(contextTrack()));
+        deleteFromServerItem.setOnAction(event -> deleteSelectedTracksFromServer());
 
         MenuItem removeItem = new MenuItem("Видалити");
         removeItem.getStyleClass().add("danger-menu-item");
@@ -613,20 +627,30 @@ public class MainView extends BorderPane {
                 new SeparatorMenuItem(), uploadItem, deleteFromServerItem,
                 new SeparatorMenuItem(), removeItem);
         menu.setOnShowing(event -> {
-            boolean hasSelection = !selectedTracks().isEmpty();
+            List<Track> selected = selectedTracks();
+            List<Track> notOnServer = tracksNotOnServer(selected);
+            List<Track> onServer = tracksOnServer(selected);
+            boolean hasSelection = !selected.isEmpty();
+
             playItem.setDisable(!hasSelection);
-            removeItem.setDisable(!hasSelection);
             addMenu.setDisable(!hasSelection);
             moveMenu.setDisable(!hasSelection);
+            removeItem.setDisable(!hasSelection);
+            removeItem.setText(selected.size() > 1
+                    ? "Видалити (" + selected.size() + ")" : "Видалити");
             if (hasSelection) {
                 fillPlaylistMenu(addMenu, false);
                 fillPlaylistMenu(moveMenu, true);
             }
 
-            Track track = contextTrack();
-            boolean onServer = track != null && track.getServerId() > 0;
-            uploadItem.setVisible(!onServer);
-            deleteFromServerItem.setVisible(onServer);
+            uploadItem.setVisible(!notOnServer.isEmpty());
+            uploadItem.setText(notOnServer.size() > 1
+                    ? "Завантажити на сервер (" + notOnServer.size() + ")"
+                    : "Завантажити на сервер");
+            deleteFromServerItem.setVisible(!onServer.isEmpty());
+            deleteFromServerItem.setText(onServer.size() > 1
+                    ? "Видалити з сервера (" + onServer.size() + ")"
+                    : "Видалити з сервера");
         });
         return menu;
     }
@@ -844,6 +868,26 @@ public class MainView extends BorderPane {
         return tracks;
     }
 
+    private static List<Track> tracksNotOnServer(List<Track> tracks) {
+        List<Track> result = new ArrayList<>();
+        for (Track track : tracks) {
+            if (track.getServerId() <= 0) {
+                result.add(track);
+            }
+        }
+        return result;
+    }
+
+    private static List<Track> tracksOnServer(List<Track> tracks) {
+        List<Track> result = new ArrayList<>();
+        for (Track track : tracks) {
+            if (track.getServerId() > 0) {
+                result.add(track);
+            }
+        }
+        return result;
+    }
+
     private void updateSelectionInfo() {
         List<Track> selected = selectedTracks();
         selectionLabel.setText(selected.isEmpty() ? "" : "Вибрано: " + selected.size());
@@ -945,14 +989,6 @@ public class MainView extends BorderPane {
         }
     }
 
-    private Track contextTrack() {
-        if (contextTrackIndex >= 0 && contextTrackIndex < facade.getTracks().size()) {
-            return facade.getTracks().get(contextTrackIndex);
-        }
-        IndexedTrack selected = trackTable.getSelectionModel().getSelectedItem();
-        return selected == null ? null : selected.track();
-    }
-
     private void chooseFiles() {
         FileChooser chooser = new FileChooser();
         chooser.setTitle("Обрати аудіофайли");
@@ -981,42 +1017,35 @@ public class MainView extends BorderPane {
         runBackgroundSync(false);
     }
 
-    private void uploadTrack(Track track) {
-        if (track == null) {
-            setStatus("Виділіть трек для завантаження");
-            return;
-        }
-        if (track.getServerId() > 0) {
-            setStatus("Трек уже на сервері #" + track.getServerId());
+    private void uploadSelectedTracks() {
+        List<Track> targets = tracksNotOnServer(selectedTracks());
+        if (targets.isEmpty()) {
+            setStatus("Виділені треки вже на сервері");
             return;
         }
 
-        setStatus("Завантаження на сервер: " + track);
-        CompletableFuture.supplyAsync(() -> facade.uploadTrackFile(track))
-                .whenComplete((serverId, error) -> Platform.runLater(() -> {
+        setStatus("Завантаження на сервер: " + targets.size() + "...");
+        CompletableFuture.supplyAsync(() -> runBulk(targets, facade::uploadTrackFile))
+                .whenComplete((outcome, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         setStatus("Сервер: " + errorMessage(error));
-                    } else {
-                        setStatus("Надіслано на сервер #" + serverId + ": " + track);
+                        return;
                     }
                     trackTable.refresh();
+                    setStatus(bulkSummary("Надіслано на сервер", targets.size(), outcome));
                 }));
     }
 
-    private void deleteTrackFromServer(Track track) {
-        if (track == null) {
-            setStatus("Виділіть трек для видалення з сервера");
-            return;
-        }
-        long serverId = track.getServerId();
-        if (serverId <= 0) {
-            setStatus("Трек не завантажено на сервер");
+    private void deleteSelectedTracksFromServer() {
+        List<Track> targets = tracksOnServer(selectedTracks());
+        if (targets.isEmpty()) {
+            setStatus("Виділені треки відсутні на сервері");
             return;
         }
 
-        setStatus("Видалення з сервера #" + serverId + "...");
-        CompletableFuture.runAsync(() -> facade.deleteTrackFromServer(track))
-                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+        setStatus("Видалення з сервера: " + targets.size() + "...");
+        CompletableFuture.supplyAsync(() -> runBulk(targets, facade::deleteTrackFromServer))
+                .whenComplete((outcome, error) -> Platform.runLater(() -> {
                     if (error != null) {
                         setStatus("Сервер: " + errorMessage(error));
                         return;
@@ -1026,8 +1055,39 @@ public class MainView extends BorderPane {
                         updateNowPlayingFromQueue();
                     }
                     updateSeekControls();
-                    setStatus("Видалено з сервера #" + serverId + ": " + track);
+                    setStatus(bulkSummary("Видалено з сервера", targets.size(), outcome));
                 }));
+    }
+
+    private static BulkOutcome runBulk(List<Track> tracks, Consumer<Track> action) {
+        int succeeded = 0;
+        String firstError = null;
+        for (Track track : tracks) {
+            try {
+                action.accept(track);
+                succeeded++;
+            } catch (RuntimeException e) {
+                if (firstError == null) {
+                    firstError = track + ": " + errorMessage(e);
+                }
+            }
+        }
+        return new BulkOutcome(succeeded, firstError);
+    }
+
+    private static String bulkSummary(String action, int total, BulkOutcome outcome) {
+        StringBuilder summary = new StringBuilder(action).append(": ").append(outcome.succeeded());
+        int failed = total - outcome.succeeded();
+        if (failed > 0) {
+            summary.append(" · з помилкою: ").append(failed);
+            if (outcome.firstError() != null) {
+                summary.append(" (").append(outcome.firstError()).append(")");
+            }
+        }
+        return summary.toString();
+    }
+
+    private record BulkOutcome(int succeeded, String firstError) {
     }
 
     private void runBackgroundSync(boolean manual) {
