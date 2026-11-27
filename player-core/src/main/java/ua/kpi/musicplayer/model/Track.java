@@ -87,10 +87,6 @@ public class Track {
         return visitor.visitTrack(this);
     }
 
-    /**
-     * Прибирає службовий timestamp-префікс сервера та робить ім'я файлу
-     * придатним для показу як резервної назви треку.
-     */
     public static String normalizeFileName(String fileName) {
         if (fileName == null || fileName.isBlank()) {
             return "";

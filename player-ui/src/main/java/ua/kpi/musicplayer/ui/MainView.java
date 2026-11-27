@@ -3,12 +3,14 @@ package ua.kpi.musicplayer.ui;
 import javafx.animation.KeyFrame;
 import javafx.animation.Timeline;
 import javafx.application.Platform;
+import javafx.beans.property.SimpleStringProperty;
 import javafx.collections.ListChangeListener;
 import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Cursor;
 import javafx.scene.Node;
 import javafx.scene.control.Button;
-import javafx.scene.control.ButtonBase;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.Label;
@@ -19,21 +21,25 @@ import javafx.scene.control.MenuItem;
 import javafx.scene.control.SelectionMode;
 import javafx.scene.control.SeparatorMenuItem;
 import javafx.scene.control.Slider;
+import javafx.scene.control.TableCell;
+import javafx.scene.control.TableColumn;
+import javafx.scene.control.TableRow;
+import javafx.scene.control.TableView;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputControl;
 import javafx.scene.control.TextInputDialog;
 import javafx.scene.control.ToggleButton;
 import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyEvent;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
 import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
-import javafx.scene.text.TextAlignment;
 import javafx.stage.FileChooser;
-import javafx.stage.Stage;
-import javafx.stage.WindowEvent;
 import javafx.util.Duration;
 import ua.kpi.musicplayer.audio.AudioMetadataReader;
 import ua.kpi.musicplayer.audio.Equalizer;
@@ -46,7 +52,6 @@ import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
 import ua.kpi.musicplayer.sync.PlaylistSyncResult;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
-import ua.kpi.musicplayer.sync.TrackUploadResult;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 import ua.kpi.musicplayer.visitor.SummaryMediaVisitor;
 
@@ -62,217 +67,225 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.CompletableFuture;
+import java.util.function.Function;
 
-public class MainView extends StackPane {
+public class MainView extends BorderPane {
 
     private static final Path STATE_FILE =
             Path.of(System.getProperty("user.home"), "musicplayer-state.properties");
+    private static final Path CACHE_DIR =
+            Path.of(System.getProperty("user.home"), "musicplayer-cache");
+    private static final int BAR_WIDTH = 32;
 
     private final MusicPlayerFacade facade;
     private final MediaInfoVisitor mediaInfoVisitor = new SummaryMediaVisitor();
 
-    private final ListView<Track> trackList = new ListView<>();
-    private final ListView<RadioStation> stationList = new ListView<>();
-    private final TextField streamUrlField = new TextField();
-    private final TextField stationSearchField = new TextField();
-    private final Label nowPlayingLabel = new Label("Нічого не відтворюється");
-    private final Label currentDetailsLabel = new Label();
-    private final Label playlistDetailsLabel = new Label();
-    private final Label stationDetailsLabel = new Label();
-    private final Label statusLabel = new Label("Готово");
-    private final Label selectionLabel = new Label();
-    private final Button pauseButton = new Button("Пауза");
-    private final Button repeatButton = new Button();
-    private final Button shuffleButton = new Button();
-    private final Button streamPlayButton = new Button("Грати");
-    private final Button stationSearchButton = new Button("Пошук");
-    private final Button stationPlayButton = new Button("Грати");
-    private final Button createPlaylistButton = new Button("Створити");
-    private final Button deletePlaylistButton = new Button("Видалити");
-    private final Button syncButton = new Button("Синхронізувати");
-    private final Button removeSelectedButton = new Button("Видалити");
-    private final Button uploadButton = new Button("На сервер");
-    private final Button uploadAllButton = new Button("Усі на сервер");
-    private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
-    private final ComboBox<Playlist> playlistBox = new ComboBox<>();
-    private final Slider seekSlider = new Slider(0, 1, 0);
-    private final Label seekTimeLabel = new Label("00:00 / 00:00");
-    private final Timeline seekTimeline =
-            new Timeline(new KeyFrame(Duration.millis(500), event -> updateSeekControls()));
-    private final StackPane pageStack = new StackPane();
+    private final ToggleButton libraryTab = new ToggleButton("[1] Бібліотека");
+    private final ToggleButton radioTab = new ToggleButton("[2] Радіо");
+    private final ToggleButton equalizerTab = new ToggleButton("[3] Еквалайзер");
+    private final Button serverIndicator = new Button("Сервер: офлайн");
 
-    private Slider volumeSlider;
+    private final ListView<Playlist> playlistList = new ListView<>();
+    private final TableView<IndexedTrack> trackTable = new TableView<>();
+    private final TextField filterField = new TextField();
+    private final Label selectionLabel = new Label();
+    private final Label trackDetailsLabel = new Label();
+    private final Button addPlaylistButton = new Button("+");
+    private final Button deletePlaylistButton = new Button("-");
+
+    private final ListView<RadioStation> stationList = new ListView<>();
+    private final TextField stationSearchField = new TextField();
+    private final TextField streamUrlField = new TextField();
+    private final Label stationDetailsLabel = new Label();
+    private final Label streamStatusLabel = new Label();
+    private final Button searchButton = new Button("[Пошук]");
+    private final Button connectButton = new Button("[Підключити]");
+
+    private final ComboBox<Equalizer.Preset> presetBox = new ComboBox<>();
     private Slider lowEqSlider;
     private Slider midEqSlider;
     private Slider highEqSlider;
-    private Stage stage;
-    private boolean updatingSeekSlider;
-    private boolean updatingPlaylistBox;
-    private int contextMenuTrackIndex = -1;
+
+    private final Label nowPlayingLabel = new Label("Нічого не відтворюється");
+    private final Label progressBarLabel = new Label();
+    private final Label timeLabel = new Label("00:00 / 00:00");
+    private final Label volumeValueLabel = new Label();
+    private final Button prevButton = new Button("[|<]");
+    private final Button playPauseButton = new Button("[>]");
+    private final Button stopButton = new Button("[■]");
+    private final Button nextButton = new Button("[>|]");
+    private final Button repeatButton = new Button();
+    private final Button shuffleButton = new Button();
+    private final Label statusLine = new Label();
+    private final StackPane pageStack = new StackPane();
+    private final Timeline seekTimeline =
+            new Timeline(new KeyFrame(Duration.millis(500), event -> onTimelineTick()));
+
+    private Slider volumeSlider;
+    private List<Node> pages;
+    private String statusText = "Готово";
+    private int blinkTick;
+    private int activeTab;
+    private boolean updatingPlaylistSelection;
+    private int contextTrackIndex = -1;
     private long streamRequest;
-    private double dragOffsetX;
-    private double dragOffsetY;
+    private boolean syncRunning;
+    private double seekableDuration;
 
     public MainView(MusicPlayerFacade facade) {
         this.facade = facade;
 
-        setPrefSize(1080, 730);
-        setPadding(new Insets(10));
-        setAlignment(Pos.CENTER);
         getStyleClass().add("main-root");
 
         volumeSlider = new Slider(0, 100, facade.getVolume() * 100);
-        volumeSlider.setPrefWidth(220);
-        volumeSlider.valueProperty().addListener((observable, oldValue, newValue) ->
-                facade.setVolume(newValue.floatValue() / 100.0f));
-
-        seekSlider.setPrefWidth(480);
-        seekSlider.setDisable(true);
-        seekSlider.valueProperty().addListener((observable, oldValue, newValue) -> {
-            if (!updatingSeekSlider) {
-                seekTimeLabel.setText(formatDuration(Math.round(newValue.doubleValue() * 1000))
-                        + " / " + formatDuration(Math.round(seekSlider.getMax() * 1000)));
-            }
+        volumeSlider.setPrefWidth(140);
+        volumeValueLabel.getStyleClass().add("muted-label");
+        volumeValueLabel.setMinWidth(44);
+        volumeValueLabel.setText(Math.round(facade.getVolume() * 100) + "%");
+        volumeSlider.valueProperty().addListener((observable, oldValue, newValue) -> {
+            facade.setVolume(newValue.floatValue() / 100.0f);
+            volumeValueLabel.setText(Math.round(newValue.doubleValue()) + "%");
         });
-        seekSlider.setOnMouseReleased(event -> seekToSliderValue());
 
         lowEqSlider = createEqSlider(Equalizer.LOW_BAND);
         midEqSlider = createEqSlider(Equalizer.MID_BAND);
         highEqSlider = createEqSlider(Equalizer.HIGH_BAND);
 
-        equalizerPresetBox.getItems().setAll(Equalizer.Preset.values());
-        equalizerPresetBox.setValue(Equalizer.Preset.FLAT);
-        equalizerPresetBox.setOnAction(event -> {
-            Equalizer.Preset preset = equalizerPresetBox.getValue();
+        presetBox.getItems().setAll(Equalizer.Preset.values());
+        presetBox.setValue(Equalizer.Preset.FLAT);
+        presetBox.setOnAction(event -> {
+            Equalizer.Preset preset = presetBox.getValue();
             if (preset == null) {
                 return;
             }
             facade.applyEqualizerPreset(preset);
             updateEqualizerControls();
-            statusLabel.setText("Еквалайзер: " + preset.getDisplayName());
+            setStatus("Еквалайзер: " + preset.getDisplayName());
         });
 
-        playlistBox.setPrefWidth(220);
-        playlistBox.setOnAction(event -> switchPlaylist());
+        ToggleGroup navigation = new ToggleGroup();
+        libraryTab.setToggleGroup(navigation);
+        radioTab.setToggleGroup(navigation);
+        equalizerTab.setToggleGroup(navigation);
+        libraryTab.getStyleClass().add("tab-button");
+        radioTab.getStyleClass().add("tab-button");
+        equalizerTab.getStyleClass().add("tab-button");
+        libraryTab.setOnAction(event -> showPage(0));
+        radioTab.setOnAction(event -> showPage(1));
+        equalizerTab.setOnAction(event -> showPage(2));
+        libraryTab.setSelected(true);
 
-        pauseButton.setOnAction(event -> togglePause());
-        deletePlaylistButton.getStyleClass().add("danger-button");
-        deletePlaylistButton.setOnAction(event -> deletePlaylist());
+        serverIndicator.getStyleClass().addAll("srv-indicator", "srv-offline");
+        serverIndicator.setOnAction(event -> runBackgroundSync(true));
+
+        addPlaylistButton.setPrefWidth(44);
+        deletePlaylistButton.setPrefWidth(44);
+        addPlaylistButton.setTooltip(new Tooltip("Створити плейлист"));
         deletePlaylistButton.setTooltip(new Tooltip("Видалити плейлист"));
-        createPlaylistButton.setOnAction(event -> createPlaylist());
-        createPlaylistButton.setTooltip(new Tooltip("Створити плейлист"));
-        syncButton.setOnAction(event -> synchronizeTracks());
-        syncButton.setTooltip(new Tooltip("Синхронізувати треки з сервером"));
-        removeSelectedButton.getStyleClass().add("danger-button");
-        removeSelectedButton.setOnAction(event -> removeSelectedTracks());
-        removeSelectedButton.setTooltip(new Tooltip("Видалити вибрані треки"));
-        uploadButton.setOnAction(event -> uploadSelectedTrack());
-        uploadButton.setTooltip(new Tooltip("Завантажити вибраний трек на сервер"));
-        uploadAllButton.setOnAction(event -> uploadUnsyncedTracks());
-        uploadAllButton.setTooltip(new Tooltip("Завантажити всі треки поточного списку, яких немає на сервері"));
+        addPlaylistButton.setOnAction(event -> createPlaylist());
+        deletePlaylistButton.setOnAction(event -> deletePlaylist());
 
-        repeatButton.setOnAction(event -> {
-            facade.cycleRepeatMode();
-            updateModeControls();
-            statusLabel.setText("Режим повтору: " + repeatModeText());
-        });
-
-        shuffleButton.setOnAction(event -> {
-            facade.toggleShuffle();
-            updateModeControls();
-            statusLabel.setText("Перемішування: " + (facade.isShuffle() ? "увімкнено" : "вимкнено"));
-        });
-
-        trackList.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
-        trackList.setPrefHeight(320);
-        trackList.setPlaceholder(new Label("Порожньо"));
-        trackList.setCellFactory(list -> new ListCell<>() {
+        playlistList.setPlaceholder(new Label("Немає плейлистів"));
+        playlistList.getSelectionModel().selectedItemProperty().addListener(
+                (observable, oldValue, selected) -> switchPlaylist(selected));
+        playlistList.setCellFactory(list -> new ListCell<>() {
             @Override
-            protected void updateItem(Track track, boolean empty) {
-                super.updateItem(track, empty);
-                getStyleClass().remove("current-track");
-                if (empty || track == null) {
+            protected void updateItem(Playlist playlist, boolean empty) {
+                super.updateItem(playlist, empty);
+                getStyleClass().remove("default-playlist");
+                if (empty || playlist == null) {
                     setText(null);
                 } else {
-                    setText(track.toString());
-                    if (getIndex() == facade.getCurrentIndex()) {
-                        getStyleClass().add("current-track");
+                    setText(playlistDisplayName(playlist));
+                    if (facade.isDefaultPlaylist(playlist.getId())) {
+                        getStyleClass().add("default-playlist");
                     }
                 }
             }
         });
-        trackList.getSelectionModel().getSelectedItems().addListener(
-                (ListChangeListener<Track>) change -> updateSelectionInfo());
-        trackList.setOnMouseClicked(event -> {
-            int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
-            if (event.getClickCount() == 2 && selectedIndex >= 0) {
-                playTrack(selectedIndex);
-            }
-        });
-        trackList.setContextMenu(createTrackContextMenu());
-        trackList.setOnContextMenuRequested(event ->
-                selectTrackForContextMenu(event.getPickResult().getIntersectedNode()));
-        trackList.setOnMousePressed(event -> {
-            if (event.isSecondaryButtonDown()) {
-                selectTrackForContextMenu(event.getPickResult().getIntersectedNode());
-            }
-        });
 
-        streamUrlField.setPromptText("Адреса потоку");
-        streamUrlField.setPrefWidth(420);
-        streamPlayButton.getStyleClass().add("accent-button");
-        streamPlayButton.setOnAction(event -> playStream(streamUrlField.getText()));
+        filterField.setPromptText("Фільтр / пошук...");
+        filterField.textProperty().addListener(
+                (observable, oldValue, newValue) -> refreshTrackRows(false));
+
+        configureTrackTable();
+        trackTable.getSelectionModel().setSelectionMode(SelectionMode.MULTIPLE);
+        trackTable.getSelectionModel().getSelectedItems().addListener(
+                (ListChangeListener<IndexedTrack>) change -> updateSelectionInfo());
+
+        configureDetailsLabel(trackDetailsLabel);
+        configureDetailsLabel(stationDetailsLabel);
 
         stationSearchField.setPromptText("Станція або тег");
-        stationSearchField.setPrefWidth(320);
-        stationSearchField.setOnAction(event -> searchStations());
-        stationSearchButton.setOnAction(event -> searchStations());
-        stationPlayButton.setDisable(true);
-        stationPlayButton.setOnAction(event -> playSelectedStation());
-
-        stationList.setPrefHeight(260);
-        stationList.setPlaceholder(new Label("Нічого не знайдено"));
+        stationList.getItems().setAll(presetStations());
+        stationList.setPlaceholder(new Label("Немає станцій"));
         stationList.setCellFactory(list -> new ListCell<>() {
             @Override
             protected void updateItem(RadioStation station, boolean empty) {
                 super.updateItem(station, empty);
-                setText(empty || station == null ? null : stationName(station));
+                setText(empty || station == null ? null : station.toString());
             }
         });
-        stationList.getSelectionModel().selectedItemProperty().addListener(
-                (observable, oldValue, newValue) -> {
-                    stationPlayButton.setDisable(newValue == null);
-                    showStationDetails(newValue);
-                });
+        stationList.getSelectionModel().selectedItemProperty().addListener((observable, oldValue, station) -> {
+            showStationDetails(station);
+            if (station != null && hasText(station.getPlaybackUrl())) {
+                streamUrlField.setText(station.getPlaybackUrl());
+            }
+        });
         stationList.setOnMouseClicked(event -> {
             if (event.getClickCount() == 2) {
                 playSelectedStation();
             }
         });
 
-        updateModeControls();
+        streamStatusLabel.getStyleClass().add("media-details");
+        streamStatusLabel.setWrapText(true);
+        setStreamStatus("зупинено", null);
 
-        VBox playerPage = createPlayerPage();
-        VBox playlistsPage = createPlaylistsPage();
-        VBox radioPage = createRadioPage();
-        VBox equalizerPage = createEqualizerPage();
+        prevButton.setOnAction(event -> playPrevious());
+        playPauseButton.setOnAction(event -> togglePlayPause());
+        stopButton.setOnAction(event -> stop());
+        nextButton.setOnAction(event -> playNext());
+        repeatButton.setOnAction(event -> {
+            facade.cycleRepeatMode();
+            updateModeControls();
+            setStatus("Режим повтору: " + repeatModeText());
+        });
+        shuffleButton.setOnAction(event -> {
+            facade.toggleShuffle();
+            updateModeControls();
+            setStatus("Перемішування: " + (facade.isShuffle() ? "увімкнено" : "вимкнено"));
+        });
 
-        ToggleGroup navigation = new ToggleGroup();
-        ToggleButton playerNav = createNavButton("Плеєр", playerPage, navigation);
-        ToggleButton playlistsNav = createNavButton("Плейлисти", playlistsPage, navigation);
-        ToggleButton radioNav = createNavButton("Радіо", radioPage, navigation);
-        ToggleButton equalizerNav = createNavButton("Еквалайзер", equalizerPage, navigation);
-        playerNav.setSelected(true);
-        pageStack.getChildren().setAll(playerPage);
-        pageStack.setPadding(new Insets(20, 28, 10, 28));
-        pageStack.setMaxSize(Double.MAX_VALUE, Double.MAX_VALUE);
+        progressBarLabel.getStyleClass().add("progress-bar-text");
+        progressBarLabel.setCursor(Cursor.HAND);
+        progressBarLabel.setOnMouseClicked(event -> seekByProgressBar(event.getX()));
 
-        BorderPane frame = new BorderPane();
-        frame.getStyleClass().add("app-frame");
-        frame.setTop(createHeader(playerNav, playlistsNav, radioNav, equalizerNav));
-        frame.setCenter(pageStack);
-        frame.setBottom(createStatusBar());
-        getChildren().add(frame);
+        Node libraryPage = createLibraryPage();
+        Node radioPage = createRadioPage();
+        Node equalizerPage = createEqualizerPage();
+        pages = List.of(libraryPage, radioPage, equalizerPage);
+        pageStack.getStyleClass().add("page-stack");
+        pageStack.getChildren().add(libraryPage);
+
+        setTop(createHeader());
+        setCenter(pageStack);
+        setBottom(createBottomPane());
+
+        addEventFilter(KeyEvent.KEY_PRESSED, event -> {
+            if (getScene() == null || getScene().getFocusOwner() instanceof TextInputControl) {
+                return;
+            }
+            switch (event.getCode()) {
+                case DIGIT1, NUMPAD1 -> showPage(0);
+                case DIGIT2, NUMPAD2 -> showPage(1);
+                case DIGIT3, NUMPAD3 -> showPage(2);
+                default -> {
+                    return;
+                }
+            }
+            event.consume();
+        });
 
         facade.setOnTrackFinished(streamFinished ->
                 Platform.runLater(() -> onTrackFinished(streamFinished)));
@@ -280,247 +293,299 @@ public class MainView extends StackPane {
                 Platform.runLater(() -> updatePlayerState(state)));
 
         loadSavedTracks();
+        updateModeControls();
         updateSeekControls();
         seekTimeline.setCycleCount(Timeline.INDEFINITE);
         seekTimeline.play();
+        runBackgroundSync(false);
     }
 
-    public void attachStage(Stage stage) {
-        this.stage = stage;
-        stage.setOnCloseRequest(event -> saveState());
-    }
-
-    private VBox createPlayerPage() {
-        VBox page = new VBox();
-        page.getStyleClass().add("page");
-        page.setAlignment(Pos.CENTER);
-
-        VBox content = new VBox(16);
-        content.setAlignment(Pos.CENTER);
-        content.setMaxWidth(820);
-
-        Label art = new Label("♪");
-        StackPane albumArt = new StackPane(art);
-        albumArt.getStyleClass().add("album-art");
-        albumArt.setPrefSize(200, 200);
-        albumArt.setMinSize(200, 200);
-        albumArt.setMaxSize(200, 200);
-
-        nowPlayingLabel.getStyleClass().add("now-playing");
-        nowPlayingLabel.setWrapText(true);
-        nowPlayingLabel.setTextAlignment(TextAlignment.CENTER);
-        nowPlayingLabel.setMaxWidth(780);
-
-        configureDetailsLabel(currentDetailsLabel);
-        currentDetailsLabel.setTextAlignment(TextAlignment.CENTER);
-        currentDetailsLabel.setMaxWidth(780);
-
-        seekTimeLabel.getStyleClass().add("time-label");
-        HBox seekRow = new HBox(14, seekSlider, seekTimeLabel);
-        seekRow.setAlignment(Pos.CENTER);
-        seekRow.setMaxWidth(780);
-        HBox.setHgrow(seekSlider, Priority.ALWAYS);
-
-        Button playButton = new Button("Грати");
-        playButton.getStyleClass().addAll("accent-button", "play-button");
-        playButton.setOnAction(event -> play());
-        Button stopButton = new Button("Стоп");
-        stopButton.setOnAction(event -> stop());
-        Button previousButton = new Button("Назад");
-        previousButton.setOnAction(event -> playPrevious());
-        Button nextButton = new Button("Далі");
-        nextButton.setOnAction(event -> playNext());
-
-        HBox transport = new HBox(8, previousButton, playButton, pauseButton, stopButton, nextButton);
-        transport.setAlignment(Pos.CENTER);
-
-        HBox modesAndVolume = new HBox(12, repeatButton, shuffleButton,
-                new Label("Гучність"), volumeSlider);
-        modesAndVolume.setAlignment(Pos.CENTER);
-        modesAndVolume.setMaxWidth(780);
-
-        content.getChildren().addAll(albumArt, nowPlayingLabel, currentDetailsLabel,
-                seekRow, transport, modesAndVolume);
-        page.getChildren().add(content);
-        return page;
-    }
-
-    private VBox createPlaylistsPage() {
-        VBox page = new VBox(16);
-        page.getStyleClass().add("page");
-
-        Region titleSpacer = new Region();
-        HBox.setHgrow(titleSpacer, Priority.ALWAYS);
-        HBox playlistRow = new HBox(10, pageTitle("Плейлисти"), titleSpacer, playlistBox,
-                createPlaylistButton, deletePlaylistButton, syncButton);
-        playlistRow.setAlignment(Pos.CENTER_LEFT);
-
-        selectionLabel.getStyleClass().add("muted-label");
-        configureDetailsLabel(playlistDetailsLabel);
-        playlistDetailsLabel.setMaxWidth(Double.MAX_VALUE);
-
-        Region manageSpacer = new Region();
-        HBox.setHgrow(manageSpacer, Priority.ALWAYS);
-        Button playSelectedButton = new Button("Грати");
-        playSelectedButton.getStyleClass().add("accent-button");
-        playSelectedButton.setOnAction(event -> play());
-        HBox manageRow = new HBox(8, createChooseFilesButton(), playSelectedButton,
-                uploadButton, uploadAllButton, removeSelectedButton, manageSpacer, selectionLabel);
-        manageRow.setAlignment(Pos.CENTER_LEFT);
-
-        VBox.setVgrow(trackList, Priority.ALWAYS);
-        page.getChildren().addAll(playlistRow, trackList, playlistDetailsLabel, manageRow);
-        return page;
-    }
-
-    private VBox createRadioPage() {
-        VBox page = new VBox(14);
-        page.getStyleClass().add("page");
-        page.getChildren().add(pageTitle("Радіо"));
-
-        HBox streamRow = new HBox(10, streamUrlField, streamPlayButton);
-        streamRow.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(streamUrlField, Priority.ALWAYS);
-
-        HBox searchRow = new HBox(10, stationSearchField, stationSearchButton, stationPlayButton);
-        searchRow.setAlignment(Pos.CENTER_LEFT);
-        HBox.setHgrow(stationSearchField, Priority.ALWAYS);
-
-        configureDetailsLabel(stationDetailsLabel);
-        stationDetailsLabel.setMaxWidth(Double.MAX_VALUE);
-
-        VBox.setVgrow(stationList, Priority.ALWAYS);
-        page.getChildren().addAll(streamRow, searchRow, stationDetailsLabel, stationList);
-        return page;
-    }
-
-    private VBox createEqualizerPage() {
-        VBox page = new VBox(18);
-        page.getStyleClass().add("page");
-        page.getChildren().add(pageTitle("Еквалайзер"));
-
-        Button resetEqualizerButton = new Button("Скинути");
-        resetEqualizerButton.setOnAction(event -> {
-            facade.resetEqualizer();
-            equalizerPresetBox.setValue(Equalizer.Preset.FLAT);
-            updateEqualizerControls();
-            statusLabel.setText("Еквалайзер скинуто");
-        });
-
-        HBox presetRow = new HBox(10, new Label("Пресет"), equalizerPresetBox,
-                resetEqualizerButton);
-        presetRow.setAlignment(Pos.CENTER_LEFT);
-        equalizerPresetBox.setPrefWidth(200);
-
-        VBox bands = new VBox(14,
-                createEqRow("Низькі", lowEqSlider),
-                createEqRow("Середні", midEqSlider),
-                createEqRow("Високі", highEqSlider));
-        bands.getStyleClass().add("eq-bands");
-
-        page.getChildren().addAll(presetRow, bands);
-        return page;
-    }
-
-    private HBox createEqRow(String title, Slider slider) {
-        Label valueLabel = new Label(formatGain((float) slider.getValue()));
-        valueLabel.setMinWidth(70);
-        valueLabel.getStyleClass().add("muted-label");
-        slider.valueProperty().addListener(
-                (observable, oldValue, newValue) -> valueLabel.setText(formatGain(newValue.floatValue())));
-
-        Label titleLabel = new Label(title);
-        titleLabel.setMinWidth(140);
-        HBox.setHgrow(slider, Priority.ALWAYS);
-        HBox row = new HBox(12, titleLabel, slider, valueLabel);
-        row.setAlignment(Pos.CENTER_LEFT);
-        return row;
-    }
-
-    private ToggleButton createNavButton(String text, Node page, ToggleGroup group) {
-        ToggleButton button = new ToggleButton(text);
-        button.getStyleClass().add("tab-button");
-        button.setToggleGroup(group);
-        button.setOnAction(event -> {
-            button.setSelected(true);
-            pageStack.getChildren().setAll(page);
-        });
-        return button;
-    }
-
-    private HBox createHeader(ToggleButton... navButtons) {
-        Label logo = new Label("♪");
-        logo.getStyleClass().add("header-logo");
-        Label title = new Label("Music Player");
-        title.getStyleClass().add("header-title");
-        HBox brand = new HBox(8, logo, title);
-        brand.setAlignment(Pos.CENTER_LEFT);
-
-        HBox tabs = new HBox(2, navButtons);
-        tabs.getStyleClass().add("tab-bar");
-        tabs.setAlignment(Pos.CENTER_LEFT);
-
+    private HBox createHeader() {
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        Button minimize = new Button("—");
-        minimize.getStyleClass().add("window-button");
-        minimize.setOnAction(event -> {
-            if (stage != null) {
-                stage.setIconified(true);
-            }
-        });
-
-        Button close = new Button("✕");
-        close.getStyleClass().addAll("window-button", "close-button");
-        close.setOnAction(event -> requestClose());
-
-        HBox header = new HBox(24, brand, tabs, spacer, minimize, close);
+        HBox header = new HBox(8, libraryTab, radioTab, equalizerTab, spacer, serverIndicator);
         header.getStyleClass().add("header");
         header.setAlignment(Pos.CENTER_LEFT);
-
-        header.setOnMousePressed(event -> {
-            if (stage == null || isButtonTarget(event.getTarget())) {
-                return;
-            }
-            dragOffsetX = event.getScreenX() - stage.getX();
-            dragOffsetY = event.getScreenY() - stage.getY();
-        });
-        header.setOnMouseDragged(event -> {
-            if (stage == null || isButtonTarget(event.getTarget())) {
-                return;
-            }
-            stage.setX(event.getScreenX() - dragOffsetX);
-            stage.setY(event.getScreenY() - dragOffsetY);
-        });
         return header;
     }
 
-    private static boolean isButtonTarget(Object target) {
-        Object current = target;
-        while (current instanceof Node node) {
-            if (node instanceof ButtonBase) {
-                return true;
-            }
-            current = node.getParent();
-        }
-        return false;
+    private VBox createBottomPane() {
+        StackPane playerPanel = createPanel("[Плеєр]", createPlayerContent());
+        VBox bottom = new VBox(playerPanel, createStatusBar());
+        bottom.setPadding(new Insets(0, 10, 0, 10));
+        return bottom;
+    }
+
+    private StackPane createPanel(String title, Node content) {
+        Label titleLabel = new Label(title);
+        titleLabel.getStyleClass().add("tui-panel-title");
+        titleLabel.setTranslateY(-9);
+
+        StackPane panel = new StackPane(content);
+        panel.getStyleClass().add("tui-panel");
+        StackPane.setAlignment(titleLabel, Pos.TOP_LEFT);
+        StackPane.setMargin(titleLabel, new Insets(0, 0, 0, 8));
+        panel.getChildren().add(titleLabel);
+        return panel;
+    }
+
+    private Node createLibraryPage() {
+        VBox.setVgrow(playlistList, Priority.ALWAYS);
+        HBox playlistControls = new HBox(6, addPlaylistButton, deletePlaylistButton);
+
+        VBox playlistsContent = new VBox(6, playlistList, playlistControls);
+        playlistsContent.getStyleClass().add("tui-panel-content");
+        StackPane playlistsPanel = createPanel("[1] Плейлисти", playlistsContent);
+        playlistsPanel.setPrefWidth(230);
+
+        selectionLabel.getStyleClass().add("muted-label");
+        Button addFilesButton = new Button("+ Додати файли");
+        addFilesButton.setOnAction(event -> chooseFiles());
+        HBox toolbar = new HBox(8, filterField, addFilesButton, selectionLabel);
+        HBox.setHgrow(filterField, Priority.ALWAYS);
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+
+        VBox.setVgrow(trackTable, Priority.ALWAYS);
+        VBox tracksContent = new VBox(6, toolbar, trackTable, trackDetailsLabel);
+        tracksContent.getStyleClass().add("tui-panel-content");
+        StackPane tracksPanel = createPanel("[2] Треки", tracksContent);
+        HBox.setHgrow(tracksPanel, Priority.ALWAYS);
+
+        HBox split = new HBox(10, playlistsPanel, tracksPanel);
+        VBox page = new VBox(split);
+        page.getStyleClass().add("page");
+        VBox.setVgrow(split, Priority.ALWAYS);
+        return page;
+    }
+
+    private Node createRadioPage() {
+        searchButton.setOnAction(event -> searchStations());
+        stationSearchField.setOnAction(event -> searchStations());
+        Button presetsButton = new Button("[Пресети]");
+        presetsButton.setOnAction(event -> showPresetStations());
+        HBox searchRow = new HBox(8, stationSearchField, searchButton, presetsButton);
+        HBox.setHgrow(stationSearchField, Priority.ALWAYS);
+
+        VBox.setVgrow(stationList, Priority.ALWAYS);
+        VBox stationsContent = new VBox(6, searchRow, stationList, stationDetailsLabel);
+        stationsContent.getStyleClass().add("tui-panel-content");
+        StackPane stationsPanel = createPanel("[Радіо]", stationsContent);
+        VBox.setVgrow(stationsPanel, Priority.ALWAYS);
+
+        streamUrlField.setPromptText("http://.../stream");
+        connectButton.getStyleClass().add("accent-button");
+        connectButton.setOnAction(event -> playStream(streamUrlField.getText(), null));
+        Button stopStreamButton = new Button("[Стоп]");
+        stopStreamButton.setOnAction(event -> stop());
+        HBox streamRow = new HBox(8, streamUrlField, connectButton, stopStreamButton);
+        HBox.setHgrow(streamUrlField, Priority.ALWAYS);
+
+        VBox streamContent = new VBox(6, streamRow, streamStatusLabel);
+        streamContent.getStyleClass().add("tui-panel-content");
+        StackPane streamPanel = createPanel("[Потік]", streamContent);
+
+        VBox page = new VBox(10, stationsPanel, streamPanel);
+        page.getStyleClass().add("page");
+        return page;
+    }
+
+    private Node createEqualizerPage() {
+        Label presetTitle = new Label("Пресет");
+        presetTitle.getStyleClass().add("muted-label");
+        Button resetButton = new Button("[Скинути]");
+        resetButton.setOnAction(event -> {
+            facade.resetEqualizer();
+            presetBox.setValue(Equalizer.Preset.FLAT);
+            updateEqualizerControls();
+            setStatus("Еквалайзер скинуто");
+        });
+        presetBox.setPrefWidth(200);
+        HBox presetRow = new HBox(8, presetTitle, presetBox, resetButton);
+        presetRow.setAlignment(Pos.CENTER_LEFT);
+
+        HBox bands = new HBox(48,
+                createBandColumn("Низькі", lowEqSlider),
+                createBandColumn("Середні", midEqSlider),
+                createBandColumn("Високі", highEqSlider));
+        bands.getStyleClass().add("eq-bands");
+        bands.setAlignment(Pos.CENTER);
+
+        VBox content = new VBox(18, presetRow, bands);
+        content.getStyleClass().add("tui-panel-content");
+        StackPane panel = createPanel("[Еквалайзер]", content);
+
+        VBox page = new VBox(panel);
+        page.getStyleClass().add("page");
+        VBox.setVgrow(panel, Priority.ALWAYS);
+        return page;
+    }
+
+    private VBox createBandColumn(String title, Slider slider) {
+        Label valueLabel = new Label(formatGain((float) slider.getValue()));
+        valueLabel.getStyleClass().add("muted-label");
+        slider.valueProperty().addListener((observable, oldValue, newValue) ->
+                valueLabel.setText(formatGain(newValue.floatValue())));
+
+        Label titleLabel = new Label(title);
+        titleLabel.getStyleClass().add("muted-label");
+        VBox column = new VBox(6, titleLabel, slider, valueLabel);
+        column.setAlignment(Pos.CENTER);
+        return column;
+    }
+
+    private VBox createPlayerContent() {
+        nowPlayingLabel.getStyleClass().add("now-playing");
+        HBox.setHgrow(nowPlayingLabel, Priority.ALWAYS);
+
+        Label volumeTitle = new Label("[VOL]");
+        volumeTitle.getStyleClass().add("muted-label");
+        volumeValueLabel.setAlignment(Pos.CENTER_RIGHT);
+        HBox volumeBox = new HBox(8, volumeTitle, volumeSlider, volumeValueLabel);
+        volumeBox.setAlignment(Pos.CENTER_RIGHT);
+
+        HBox infoRow = new HBox(12, nowPlayingLabel, volumeBox);
+        infoRow.setAlignment(Pos.CENTER_LEFT);
+
+        timeLabel.getStyleClass().add("time-label");
+        Region controlSpacer = new Region();
+        HBox.setHgrow(controlSpacer, Priority.ALWAYS);
+        HBox controlsRow = new HBox(6, prevButton, playPauseButton, stopButton, nextButton,
+                repeatButton, shuffleButton, controlSpacer, progressBarLabel, timeLabel);
+        controlsRow.setAlignment(Pos.CENTER_LEFT);
+
+        VBox content = new VBox(6, infoRow, controlsRow);
+        content.getStyleClass().add("tui-panel-content");
+        return content;
     }
 
     private HBox createStatusBar() {
-        statusLabel.getStyleClass().add("status-label");
-        statusLabel.setMaxWidth(Double.MAX_VALUE);
-        HBox.setHgrow(statusLabel, Priority.ALWAYS);
-        HBox bar = new HBox(statusLabel);
+        Label prompt = new Label(">");
+        prompt.getStyleClass().add("status-prompt");
+        statusLine.getStyleClass().add("status-text");
+        statusLine.setMaxWidth(Double.MAX_VALUE);
+        HBox.setHgrow(statusLine, Priority.ALWAYS);
+        HBox bar = new HBox(6, prompt, statusLine);
         bar.getStyleClass().add("status-bar");
-        bar.setAlignment(Pos.CENTER_LEFT);
         return bar;
     }
 
-    private Button createChooseFilesButton() {
-        Button button = new Button("Додати файли");
-        button.setOnAction(event -> chooseFiles());
-        return button;
+    private void configureTrackTable() {
+        trackTable.setPlaceholder(new Label("Немає треків"));
+
+        TableColumn<IndexedTrack, String> numberColumn =
+                textColumn("#", 40, row -> String.valueOf(row.index() + 1));
+        TableColumn<IndexedTrack, String> titleColumn =
+                textColumn("Назва", 220, row -> trackTitle(row.track()));
+        TableColumn<IndexedTrack, String> artistColumn =
+                textColumn("Виконавець", 160, row -> orDash(row.track().getArtist()));
+        TableColumn<IndexedTrack, String> albumColumn =
+                textColumn("Альбом", 160, row -> orDash(row.track().getAlbum()));
+        TableColumn<IndexedTrack, String> durationColumn =
+                textColumn("Час", 64, row -> row.track().getDurationMs() > 0
+                        ? formatDuration(row.track().getDurationMs()) : "--:--");
+        TableColumn<IndexedTrack, String> stateColumn = createTrackStateColumn();
+
+        titleColumn.prefWidthProperty().bind(trackTable.widthProperty().subtract(520));
+        trackTable.getColumns().setAll(List.of(
+                numberColumn, titleColumn, artistColumn, albumColumn, durationColumn, stateColumn));
+
+        trackTable.setRowFactory(view -> {
+            TableRow<IndexedTrack> row = new TableRow<>() {
+                @Override
+                protected void updateItem(IndexedTrack item, boolean empty) {
+                    super.updateItem(item, empty);
+                    boolean current = !empty && item != null && item.index() == facade.getCurrentIndex();
+                    if (current && !getStyleClass().contains("current-row")) {
+                        getStyleClass().add("current-row");
+                    } else if (!current) {
+                        getStyleClass().remove("current-row");
+                    }
+                }
+            };
+            row.setOnMouseClicked(event -> {
+                if (event.getClickCount() == 2 && !row.isEmpty() && row.getItem() != null) {
+                    playTrack(row.getItem().index());
+                }
+            });
+            return row;
+        });
+
+        trackTable.setContextMenu(createTrackContextMenu());
+        trackTable.setOnContextMenuRequested(event -> {
+            contextTrackIndex = -1;
+            Node node = event.getPickResult() == null
+                    ? null : event.getPickResult().getIntersectedNode();
+            TableRow<?> row = findTableRow(node);
+            if (row == null || row.isEmpty()) {
+                return;
+            }
+            if (row.getItem() instanceof IndexedTrack indexed) {
+                contextTrackIndex = indexed.index();
+            }
+            if (!trackTable.getSelectionModel().isSelected(row.getIndex())) {
+                trackTable.getSelectionModel().clearSelection();
+                trackTable.getSelectionModel().select(row.getIndex());
+            }
+        });
+    }
+
+    private TableColumn<IndexedTrack, String> createTrackStateColumn() {
+        TableColumn<IndexedTrack, String> column = new TableColumn<>("Стан");
+        column.setPrefWidth(78);
+        column.setSortable(false);
+        column.setReorderable(false);
+        column.setCellValueFactory(data -> new SimpleStringProperty(
+                data.getValue() == null ? "" : trackState(data.getValue().track())));
+        column.setCellFactory(view -> new TableCell<>() {
+            @Override
+            protected void updateItem(String value, boolean empty) {
+                super.updateItem(value, empty);
+                getStyleClass().removeAll("state-srv", "state-cache", "state-loc");
+                if (empty || value == null) {
+                    setText(null);
+                    return;
+                }
+                setText(value);
+                if ("[CACHE]".equals(value)) {
+                    getStyleClass().add("state-cache");
+                } else if ("[SRV]".equals(value)) {
+                    getStyleClass().add("state-srv");
+                } else {
+                    getStyleClass().add("state-loc");
+                }
+            }
+        });
+        return column;
+    }
+
+    private static TableColumn<IndexedTrack, String> textColumn(
+            String title, double prefWidth, Function<IndexedTrack, String> extractor) {
+        TableColumn<IndexedTrack, String> column = new TableColumn<>(title);
+        column.setPrefWidth(prefWidth);
+        column.setSortable(false);
+        column.setReorderable(false);
+        column.setCellValueFactory(data -> new SimpleStringProperty(
+                data.getValue() == null ? "" : extractor.apply(data.getValue())));
+        column.setCellFactory(view -> new TableCell<>() {
+            @Override
+            protected void updateItem(String value, boolean empty) {
+                super.updateItem(value, empty);
+                setText(empty || value == null ? "" : value);
+            }
+        });
+        return column;
+    }
+
+    private static TableRow<?> findTableRow(Node node) {
+        Node current = node;
+        while (current != null) {
+            if (current instanceof TableRow<?> row) {
+                return row;
+            }
+            current = current.getParent();
+        }
+        return null;
     }
 
     private ContextMenu createTrackContextMenu() {
@@ -545,10 +610,9 @@ public class MainView extends StackPane {
                 new SeparatorMenuItem(), uploadItem, deleteFromServerItem,
                 new SeparatorMenuItem(), removeItem);
         menu.setOnShowing(event -> {
-            boolean hasSelection = !trackList.getSelectionModel().getSelectedItems().isEmpty();
+            boolean hasSelection = !selectedTracks().isEmpty();
             playItem.setDisable(!hasSelection);
             removeItem.setDisable(!hasSelection);
-
             addMenu.setDisable(!hasSelection);
             moveMenu.setDisable(!hasSelection);
             if (hasSelection) {
@@ -564,18 +628,11 @@ public class MainView extends StackPane {
         return menu;
     }
 
-    private Track contextTrack() {
-        if (contextMenuTrackIndex >= 0 && contextMenuTrackIndex < trackList.getItems().size()) {
-            return trackList.getItems().get(contextMenuTrackIndex);
-        }
-        return trackList.getSelectionModel().getSelectedItem();
-    }
-
     private void fillPlaylistMenu(Menu menu, boolean move) {
         menu.getItems().clear();
         long activeId = facade.getActivePlaylistId();
-        for (Playlist playlist : playlistBox.getItems()) {
-            MenuItem item = new MenuItem(playlist.getName());
+        for (Playlist playlist : playlistList.getItems()) {
+            MenuItem item = new MenuItem(playlistDisplayName(playlist));
             boolean unavailable = playlist.getId() == activeId
                     || (!move && facade.isDefaultPlaylist(playlist.getId()));
             item.setDisable(unavailable);
@@ -590,37 +647,30 @@ public class MainView extends StackPane {
         }
     }
 
-    private void selectTrackForContextMenu(Node node) {
-        contextMenuTrackIndex = -1;
-
-        ListCell<?> cell = findListCell(node);
-        if (cell == null || cell.isEmpty() || cell.getIndex() < 0) {
+    private void showPage(int index) {
+        if (index == activeTab) {
             return;
         }
-
-        int index = cell.getIndex();
-        contextMenuTrackIndex = index;
-        if (!trackList.getSelectionModel().isSelected(index)) {
-            trackList.getSelectionModel().clearSelection();
-            trackList.getSelectionModel().select(index);
-        }
+        activeTab = index;
+        libraryTab.setSelected(index == 0);
+        radioTab.setSelected(index == 1);
+        equalizerTab.setSelected(index == 2);
+        pageStack.getChildren().setAll(pages.get(index));
     }
 
-    private static ListCell<?> findListCell(Node node) {
-        Node current = node;
-        while (current != null) {
-            if (current instanceof ListCell<?> cell) {
-                return cell;
-            }
-            current = current.getParent();
-        }
-        return null;
+    private void onTimelineTick() {
+        updateSeekControls();
+        blinkTick++;
+        renderStatusLine();
     }
 
-    private static Label pageTitle(String text) {
-        Label label = new Label(text);
-        label.getStyleClass().add("page-title");
-        return label;
+    private void setStatus(String text) {
+        statusText = text == null ? "" : text;
+        renderStatusLine();
+    }
+
+    private void renderStatusLine() {
+        statusLine.setText(statusText + (blinkTick % 2 == 0 ? "█" : " "));
     }
 
     private void loadSavedTracks() {
@@ -628,66 +678,61 @@ public class MainView extends StackPane {
             List<Track> savedTracks = facade.loadSavedTracks();
             refreshPlaylistViews();
             restoreSavedPlayerState();
-            refreshTrackList(true);
+            refreshTrackRows(true);
             updateNowPlayingFromQueue();
-
-            Playlist active = playlistBox.getValue();
-            String playlistName = active == null ? "Плейлист" : active.getName();
-            statusLabel.setText(savedTracks.isEmpty()
-                    ? playlistName + " · порожньо"
-                    : playlistName + " · " + savedTracks.size() + " треків");
+            setStatus("Бібліотека: " + savedTracks.size() + " треків");
         } catch (RuntimeException e) {
-            statusLabel.setText("Помилка завантаження: " + e.getMessage());
+            setStatus("Помилка завантаження: " + e.getMessage());
         }
     }
 
     private void refreshPlaylistViews() {
         List<Playlist> playlists = facade.loadPlaylists();
         long activeId = facade.getActivePlaylistId();
+        int activeIndex = 0;
 
-        updatingPlaylistBox = true;
+        updatingPlaylistSelection = true;
         try {
-            playlistBox.getItems().setAll(playlists);
-            playlistBox.setValue(findPlaylist(playlists, activeId));
+            playlistList.getItems().setAll(playlists);
+            for (int index = 0; index < playlists.size(); index++) {
+                if (playlists.get(index).getId() == activeId) {
+                    activeIndex = index;
+                    break;
+                }
+            }
+            playlistList.getSelectionModel().select(activeIndex);
         } finally {
-            updatingPlaylistBox = false;
+            updatingPlaylistSelection = false;
         }
         updatePlaylistControls();
     }
 
-    private static Playlist findPlaylist(List<Playlist> playlists, long playlistId) {
-        Playlist found = findPlaylistById(playlists, playlistId);
-        return found != null ? found : (playlists.isEmpty() ? null : playlists.get(0));
+    private void updatePlaylistControls() {
+        Playlist selected = playlistList.getSelectionModel().getSelectedItem();
+        deletePlaylistButton.setDisable(selected == null
+                || facade.isDefaultPlaylist(selected.getId())
+                || playlistList.getItems().size() <= 1);
     }
 
-    private static Playlist findPlaylistById(List<Playlist> playlists, long playlistId) {
-        for (Playlist playlist : playlists) {
-            if (playlist.getId() == playlistId) {
-                return playlist;
-            }
-        }
-        return null;
+    private String playlistDisplayName(Playlist playlist) {
+        return facade.isDefaultPlaylist(playlist.getId()) ? "Усі треки" : playlist.getName();
     }
 
-    private void switchPlaylist() {
-        if (updatingPlaylistBox) {
-            return;
-        }
-
-        Playlist selected = playlistBox.getValue();
-        if (selected == null || selected.getId() == facade.getActivePlaylistId()) {
+    private void switchPlaylist(Playlist selected) {
+        if (updatingPlaylistSelection || selected == null
+                || selected.getId() == facade.getActivePlaylistId()) {
             return;
         }
 
         try {
             facade.switchPlaylist(selected.getId());
-            refreshTrackList(true);
-            refreshPlaylistViews();
+            refreshTrackRows(true);
             updateNowPlayingFromQueue();
-            statusLabel.setText(selected.getName() + " · " + facade.getTracks().size() + " треків");
+            setStatus(playlistDisplayName(selected) + " · "
+                    + facade.getTracks().size() + " треків");
             updateSeekControls();
         } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
+            setStatus("Помилка: " + e.getMessage());
         }
     }
 
@@ -696,6 +741,8 @@ public class MainView extends StackPane {
         dialog.setTitle("Новий плейлист");
         dialog.setHeaderText(null);
         dialog.setContentText("Назва:");
+        dialog.initOwner(getScene().getWindow());
+        dialog.getDialogPane().getStylesheets().add(stylesheetUrl());
 
         Optional<String> result = dialog.showAndWait();
         if (result.isEmpty() || result.get().isBlank()) {
@@ -705,20 +752,20 @@ public class MainView extends StackPane {
         try {
             Playlist playlist = facade.createPlaylist(result.get().trim());
             refreshPlaylistViews();
-            statusLabel.setText("Створено: " + playlist.getName());
+            setStatus("Створено: " + playlist.getName());
         } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
+            setStatus("Помилка: " + e.getMessage());
         }
     }
 
     private void deletePlaylist() {
-        Playlist selected = playlistBox.getValue();
+        Playlist selected = playlistList.getSelectionModel().getSelectedItem();
         if (selected == null) {
-            statusLabel.setText("Оберіть плейлист для видалення");
+            setStatus("Оберіть плейлист для видалення");
             return;
         }
         if (facade.isDefaultPlaylist(selected.getId())) {
-            statusLabel.setText("Базовий плейлист видалити не можна");
+            setStatus("Базовий плейлист видалити не можна");
             return;
         }
 
@@ -726,42 +773,300 @@ public class MainView extends StackPane {
             boolean activeDeleted = selected.getId() == facade.getActivePlaylistId();
             facade.deletePlaylist(selected.getId());
             refreshPlaylistViews();
-            refreshTrackList(true);
+            refreshTrackRows(true);
             if (activeDeleted) {
                 updateNowPlayingFromQueue();
             }
-            statusLabel.setText("Видалено: " + selected.getName());
+            setStatus("Видалено: " + selected.getName());
             updateSeekControls();
         } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
+            setStatus("Помилка: " + e.getMessage());
         }
     }
 
-    private void synchronizeTracks() {
-        syncButton.setDisable(true);
-        statusLabel.setText("Синхронізація з сервером...");
+    private void refreshTrackRows(boolean selectCurrent) {
+        String query = filterField.getText() == null
+                ? "" : filterField.getText().trim().toLowerCase();
+        List<Track> tracks = facade.getTracks();
+
+        List<IndexedTrack> rows = new ArrayList<>();
+        for (int index = 0; index < tracks.size(); index++) {
+            Track track = tracks.get(index);
+            if (query.isEmpty() || trackMatches(track, query)) {
+                rows.add(new IndexedTrack(index, track));
+            }
+        }
+        trackTable.getItems().setAll(rows);
+
+        if (selectCurrent && !rows.isEmpty()) {
+            selectRowByTrackIndex(facade.getCurrentIndex());
+        }
+        trackTable.refresh();
+        updateSelectionInfo();
+    }
+
+    private static boolean trackMatches(Track track, String query) {
+        return containsIgnoreCase(track.getTitle(), query)
+                || containsIgnoreCase(track.getArtist(), query)
+                || containsIgnoreCase(track.getAlbum(), query)
+                || containsIgnoreCase(track.getFileName(), query)
+                || containsIgnoreCase(track.getLocation(), query);
+    }
+
+    private static boolean containsIgnoreCase(String value, String query) {
+        return value != null && value.toLowerCase().contains(query);
+    }
+
+    private void selectRowByTrackIndex(int trackIndex) {
+        if (trackIndex < 0) {
+            return;
+        }
+        List<IndexedTrack> rows = trackTable.getItems();
+        for (int row = 0; row < rows.size(); row++) {
+            if (rows.get(row).index() == trackIndex) {
+                trackTable.getSelectionModel().clearSelection();
+                trackTable.getSelectionModel().select(row);
+                return;
+            }
+        }
+    }
+
+    private List<Track> selectedTracks() {
+        List<Track> tracks = new ArrayList<>();
+        for (IndexedTrack row : trackTable.getSelectionModel().getSelectedItems()) {
+            if (row != null) {
+                tracks.add(row.track());
+            }
+        }
+        return tracks;
+    }
+
+    private void updateSelectionInfo() {
+        List<Track> selected = selectedTracks();
+        selectionLabel.setText(selected.isEmpty() ? "" : "Вибрано: " + selected.size());
+        if (selected.size() == 1) {
+            setDetailsText(trackDetailsLabel, trackDetails(selected.get(0)));
+        } else {
+            hideDetails(trackDetailsLabel);
+        }
+    }
+
+    private void addSelectedTracksToPlaylist(Playlist target) {
+        if (target == null) {
+            setStatus("Оберіть плейлист");
+            return;
+        }
+        if (facade.isDefaultPlaylist(target.getId())) {
+            setStatus("Усі треки вже в базовому плейлисті");
+            return;
+        }
+
+        List<Track> selected = selectedTracks();
+        if (selected.isEmpty()) {
+            setStatus("Виділіть трек");
+            return;
+        }
+
+        try {
+            facade.addTracksToPlaylist(target.getId(), selected);
+            setStatus("Додано: " + selected.size());
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private void moveSelectedTracksToPlaylist(Playlist target) {
+        if (target == null) {
+            setStatus("Оберіть плейлист");
+            return;
+        }
+
+        List<Track> selected = selectedTracks();
+        if (selected.isEmpty()) {
+            setStatus("Виділіть трек");
+            return;
+        }
+
+        long activeId = facade.getActivePlaylistId();
+        if (target.getId() == activeId) {
+            setStatus("Оберіть інший плейлист");
+            return;
+        }
+
+        try {
+            boolean fromDefault = facade.isDefaultPlaylist(activeId);
+            boolean currentMoved = !fromDefault && selected.contains(facade.getCurrentTrack());
+            facade.moveTracksToPlaylist(target.getId(), selected);
+            if (!fromDefault) {
+                refreshTrackRows(false);
+                if (currentMoved) {
+                    resetNowPlaying();
+                }
+            }
+            updateSeekControls();
+            setStatus((fromDefault ? "Додано: " : "Перенесено: ") + selected.size());
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private void removeSelectedTracks() {
+        List<Integer> indices = new ArrayList<>();
+        for (IndexedTrack row : trackTable.getSelectionModel().getSelectedItems()) {
+            if (row != null) {
+                indices.add(row.index());
+            }
+        }
+        if (indices.isEmpty()) {
+            setStatus("Виділіть треки для видалення");
+            return;
+        }
+
+        indices.sort(Comparator.reverseOrder());
+        boolean currentRemoved = indices.contains(facade.getCurrentIndex());
+        int removedCount = 0;
+        try {
+            for (int index : indices) {
+                if (facade.removeTrackAt(index) != null) {
+                    removedCount++;
+                }
+            }
+            refreshTrackRows(false);
+            if (currentRemoved) {
+                resetNowPlaying();
+            }
+            updateSeekControls();
+            setStatus("Видалено: " + removedCount);
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private Track contextTrack() {
+        if (contextTrackIndex >= 0 && contextTrackIndex < facade.getTracks().size()) {
+            return facade.getTracks().get(contextTrackIndex);
+        }
+        IndexedTrack selected = trackTable.getSelectionModel().getSelectedItem();
+        return selected == null ? null : selected.track();
+    }
+
+    private void chooseFiles() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Обрати аудіофайли");
+        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
+                "Аудіофайли", "*.mp3", "*.wav", "*.flac", "*.ogg"));
+
+        List<File> files = chooser.showOpenMultipleDialog(getScene().getWindow());
+        if (files == null || files.isEmpty()) {
+            return;
+        }
+
+        List<Track> addedTracks = new ArrayList<>();
+        for (File file : files) {
+            addedTracks.add(AudioMetadataReader.read(file));
+        }
+
+        try {
+            facade.addTracksAndSave(addedTracks);
+        } catch (RuntimeException e) {
+            setStatus("Не вдалося зберегти треки: " + e.getMessage());
+            return;
+        }
+
+        refreshTrackRows(true);
+        setStatus("Додано: " + addedTracks.size() + " — синхронізація з сервером...");
+        runBackgroundSync(false);
+    }
+
+    private void uploadTrack(Track track) {
+        if (track == null) {
+            setStatus("Виділіть трек для завантаження");
+            return;
+        }
+        if (track.getServerId() > 0) {
+            setStatus("Трек уже на сервері #" + track.getServerId());
+            return;
+        }
+
+        setStatus("Завантаження на сервер: " + track);
+        CompletableFuture.supplyAsync(() -> facade.uploadTrackFile(track))
+                .whenComplete((serverId, error) -> Platform.runLater(() -> {
+                    if (error != null) {
+                        setStatus("Сервер: " + errorMessage(error));
+                    } else {
+                        setStatus("Надіслано на сервер #" + serverId + ": " + track);
+                    }
+                    trackTable.refresh();
+                }));
+    }
+
+    private void deleteTrackFromServer(Track track) {
+        if (track == null) {
+            setStatus("Виділіть трек для видалення з сервера");
+            return;
+        }
+        long serverId = track.getServerId();
+        if (serverId <= 0) {
+            setStatus("Трек не завантажено на сервер");
+            return;
+        }
+
+        setStatus("Видалення з сервера #" + serverId + "...");
+        CompletableFuture.runAsync(() -> facade.deleteTrackFromServer(track))
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    if (error != null) {
+                        setStatus("Сервер: " + errorMessage(error));
+                        return;
+                    }
+                    trackTable.refresh();
+                    setStatus("Видалено з сервера #" + serverId + ": " + track);
+                }));
+    }
+
+    private void runBackgroundSync(boolean manual) {
+        if (syncRunning) {
+            if (manual) {
+                setStatus("Оновлення з сервера вже триває");
+            }
+            return;
+        }
+
+        syncRunning = true;
+        serverIndicator.setDisable(true);
+        setServerIndicator("Синхронізація...", "srv-busy");
+        setStatus(manual ? "Оновлення з сервера..." : "Синхронізація з сервером...");
 
         CompletableFuture.supplyAsync(() -> {
-            // Спершу треки: щойно закешовані файли дають актуальні шляхи для плейлистів
             TrackSyncResult tracks = null;
             try {
                 tracks = facade.synchronizeTracks();
             } catch (RuntimeException ignored) {
-                // Сервер недоступний — плейлисти теж не синхронізуються
             }
             PlaylistSyncResult playlists = facade.synchronizePlaylists();
             return new SyncOutcome(playlists, tracks);
         }).whenComplete((outcome, error) -> Platform.runLater(() -> {
-            syncButton.setDisable(false);
+            syncRunning = false;
+            serverIndicator.setDisable(false);
             if (error != null) {
-                statusLabel.setText("Сервер недоступний — працюємо локально");
+                setServerIndicator("Сервер: офлайн", "srv-offline");
+                setStatus("Сервер недоступний — працюємо локально");
                 return;
             }
 
+            boolean online = outcome.tracks() != null || outcome.playlists().isServerAvailable();
+            setServerIndicator(online ? "Сервер: онлайн" : "Сервер: офлайн",
+                    online ? "srv-online" : "srv-offline");
+
             refreshPlaylistViews();
-            refreshTrackList(true);
-            statusLabel.setText(syncSummary(outcome));
+            refreshTrackRows(true);
+            setStatus(syncSummary(outcome));
         }));
+    }
+
+    private void setServerIndicator(String text, String styleClass) {
+        serverIndicator.getStyleClass().removeAll("srv-online", "srv-offline", "srv-busy");
+        serverIndicator.getStyleClass().add(styleClass);
+        serverIndicator.setText(text);
     }
 
     private record SyncOutcome(PlaylistSyncResult playlists, TrackSyncResult tracks) {
@@ -803,124 +1108,231 @@ public class MainView extends StackPane {
         }
     }
 
-    private void addSelectedTracksToPlaylist(Playlist target) {
-        if (target == null) {
-            statusLabel.setText("Оберіть плейлист");
-            return;
-        }
-        if (facade.isDefaultPlaylist(target.getId())) {
-            statusLabel.setText("Усі треки вже в базовому плейлисті");
+    private void play() {
+        if (facade.getTracks().isEmpty()) {
+            setStatus("Спочатку додайте аудіофайли");
             return;
         }
 
-        List<Track> selected = new ArrayList<>(trackList.getSelectionModel().getSelectedItems());
-        if (selected.isEmpty()) {
-            statusLabel.setText("Виділіть трек");
-            return;
-        }
-
-        try {
-            facade.addTracksToPlaylist(target.getId(), selected);
-            statusLabel.setText("Додано: " + selected.size());
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
+        IndexedTrack selected = trackTable.getSelectionModel().getSelectedItem();
+        playTrack(selected == null ? facade.getCurrentIndex() : selected.index());
     }
 
-    private void moveSelectedTracksToPlaylist(Playlist target) {
-        if (target == null) {
-            statusLabel.setText("Оберіть плейлист");
-            return;
-        }
-
-        List<Track> selected = new ArrayList<>(trackList.getSelectionModel().getSelectedItems());
-        if (selected.isEmpty()) {
-            statusLabel.setText("Виділіть трек");
-            return;
-        }
-
-        long activeId = facade.getActivePlaylistId();
-        if (target.getId() == activeId) {
-            statusLabel.setText("Оберіть інший плейлист");
-            return;
-        }
-
-        try {
-            boolean fromDefault = facade.isDefaultPlaylist(activeId);
-            boolean currentMoved = !fromDefault && selected.contains(facade.getCurrentTrack());
-            facade.moveTracksToPlaylist(target.getId(), selected);
-            if (!fromDefault) {
-                refreshTrackList(false);
-                if (currentMoved) {
-                    resetNowPlaying();
-                }
-            }
-            updateSeekControls();
-            statusLabel.setText((fromDefault ? "Додано: " : "Перенесено: ") + selected.size());
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
-    }
-
-    private void removeSelectedTracks() {
-        List<Integer> selectedIndices = new ArrayList<>(
-                trackList.getSelectionModel().getSelectedIndices());
-        if (selectedIndices.isEmpty()) {
-            statusLabel.setText("Виділіть треки для видалення");
-            return;
-        }
-
-        selectedIndices.sort(Comparator.reverseOrder());
-        boolean currentRemoved = selectedIndices.contains(facade.getCurrentIndex());
-        int removedCount = 0;
-        try {
-            for (int index : selectedIndices) {
-                if (facade.removeTrackAt(index) != null) {
-                    removedCount++;
-                }
-            }
-            refreshTrackList(false);
-            if (currentRemoved) {
-                resetNowPlaying();
-            }
-            updateSeekControls();
-            statusLabel.setText("Видалено: " + removedCount);
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
-    }
-
-    private void refreshTrackList(boolean selectCurrent) {
-        trackList.getItems().setAll(facade.getTracks());
-        if (selectCurrent && !trackList.getItems().isEmpty()) {
-            int index = Math.min(Math.max(facade.getCurrentIndex(), 0),
-                    trackList.getItems().size() - 1);
-            trackList.getSelectionModel().clearSelection();
-            trackList.getSelectionModel().select(index);
-        }
-        trackList.refresh();
-        updateSelectionInfo();
-    }
-
-    private void updateSelectionInfo() {
-        int count = trackList.getSelectionModel().getSelectedItems().size();
-        selectionLabel.setText(count == 0 ? "" : "Вибрано: " + count);
-
-        if (count == 1) {
-            showTrackDetails(playlistDetailsLabel,
-                    trackList.getSelectionModel().getSelectedItem());
+    private void playContextTrack() {
+        if (contextTrackIndex >= 0 && contextTrackIndex < facade.getTracks().size()) {
+            playTrack(contextTrackIndex);
         } else {
-            hideDetails(playlistDetailsLabel);
+            play();
         }
-        updateUploadButton();
     }
 
-    private void showTrackDetails(Label label, Track track) {
-        if (track == null) {
-            hideDetails(label);
+    private void playTrack(int index) {
+        try {
+            Track track = facade.playTrackAt(index);
+            if (track == null) {
+                setStatus("Спочатку оберіть треки");
+                return;
+            }
+            showPlayingTrack(track);
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private void showPlayingTrack(Track track) {
+        nowPlayingLabel.setText("♪ " + track);
+        setStatus("Грає: " + track);
+        selectRowByTrackIndex(facade.getCurrentIndex());
+        trackTable.refresh();
+        updateSeekControls();
+    }
+
+    private void playNext() {
+        try {
+            Track track = facade.playNext();
+            if (track == null) {
+                setStatus("Наступного треку немає");
+                return;
+            }
+            showPlayingTrack(track);
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private void playPrevious() {
+        try {
+            Track track = facade.playPrevious();
+            if (track == null) {
+                setStatus("Попереднього треку немає");
+                return;
+            }
+            showPlayingTrack(track);
+        } catch (RuntimeException e) {
+            setStatus("Помилка: " + e.getMessage());
+        }
+    }
+
+    private void togglePlayPause() {
+        if (facade.isPaused()) {
+            facade.togglePause();
+            setStatus("Продовжено");
+        } else if (facade.isPlaying()) {
+            facade.togglePause();
+            setStatus("Пауза");
+        } else {
+            play();
+        }
+    }
+
+    private void stop() {
+        facade.stop();
+        resetNowPlaying();
+        setStreamStatus("зупинено", null);
+        setStatus("Зупинено");
+        updateSeekControls();
+    }
+
+    private void resetNowPlaying() {
+        nowPlayingLabel.setText("Нічого не відтворюється");
+        playPauseButton.setText("[>]");
+    }
+
+    private void updateNowPlayingFromQueue() {
+        Track current = facade.getCurrentTrack();
+        nowPlayingLabel.setText(current == null ? "Нічого не відтворюється" : "♪ " + current);
+        playPauseButton.setText("[>]");
+    }
+
+    private void updateSeekControls() {
+        if (facade.getCurrentStreamUrl() != null) {
+            seekableDuration = 0;
+            progressBarLabel.setText("[" + "·".repeat(BAR_WIDTH) + "]");
+            timeLabel.setText("ПОТІК / LIVE");
             return;
         }
-        setDetailsText(label, trackDetails(track));
+
+        double duration = facade.getDurationSeconds();
+        double position = facade.getCurrentPositionSeconds();
+        seekableDuration = facade.canSeek() && duration > 0 ? duration : 0;
+
+        progressBarLabel.setText(progressBarText(position, duration));
+        timeLabel.setText(formatDuration(Math.round(position * 1000)) + " / "
+                + formatDuration(Math.round(duration * 1000)));
+    }
+
+    private void seekByProgressBar(double clickX) {
+        if (seekableDuration <= 0 || !facade.canSeek() || progressBarLabel.getWidth() <= 0) {
+            return;
+        }
+
+        double fraction = clickX / progressBarLabel.getWidth();
+        fraction = Math.max(0, Math.min(1, fraction));
+        try {
+            facade.seekToSeconds(fraction * seekableDuration);
+        } catch (RuntimeException e) {
+            setStatus("Помилка перемотування: " + e.getMessage());
+        }
+        updateSeekControls();
+    }
+
+    private static String progressBarText(double position, double duration) {
+        int filled = duration > 0 ? (int) Math.round(position / duration * BAR_WIDTH) : 0;
+        filled = Math.max(0, Math.min(BAR_WIDTH, filled));
+        StringBuilder bar = new StringBuilder("[");
+        bar.append("█".repeat(filled));
+        bar.append("░".repeat(BAR_WIDTH - filled));
+        return bar.append("]").toString();
+    }
+
+    private void playSelectedStation() {
+        RadioStation station = stationList.getSelectionModel().getSelectedItem();
+        if (station == null) {
+            setStatus("Оберіть станцію зі списку");
+            return;
+        }
+
+        String url = station.getPlaybackUrl();
+        if (!hasText(url)) {
+            setStatus("У станції немає URL потоку");
+            return;
+        }
+
+        streamUrlField.setText(url);
+        playStream(url, stationName(station));
+    }
+
+    private void showPresetStations() {
+        stationList.getItems().setAll(presetStations());
+        showStationDetails(null);
+        setStatus("Показано пресети станцій");
+    }
+
+    private void searchStations() {
+        String query = stationSearchField.getText();
+        if (!hasText(query)) {
+            setStatus("Введіть назву або тег");
+            return;
+        }
+
+        searchButton.setDisable(true);
+        setStatus("Пошук станцій...");
+        CompletableFuture.supplyAsync(() -> facade.searchStations(query))
+                .whenComplete((stations, error) -> Platform.runLater(() -> {
+                    searchButton.setDisable(false);
+                    if (error != null) {
+                        setStatus("Помилка: " + errorMessage(error));
+                        return;
+                    }
+
+                    stationList.getItems().setAll(stations);
+                    showStationDetails(null);
+                    setStatus(stations.isEmpty()
+                            ? "Станцій не знайдено"
+                            : "Знайдено станцій: " + stations.size());
+                }));
+    }
+
+    private void playStream(String url, String detail) {
+        if (!hasText(url)) {
+            setStatus("Введіть адресу потоку");
+            return;
+        }
+
+        String streamUrl = url.trim();
+        long request = ++streamRequest;
+        connectButton.setDisable(true);
+        setStatus("Підключення до потоку...");
+
+        CompletableFuture.supplyAsync(() -> facade.playStream(streamUrl))
+                .whenComplete((started, error) -> Platform.runLater(() -> {
+                    if (request != streamRequest) {
+                        return;
+                    }
+
+                    connectButton.setDisable(false);
+                    updateSeekControls();
+
+                    if (error != null) {
+                        setStreamStatus("помилка", streamUrl);
+                        setStatus("Помилка потоку: " + errorMessage(error));
+                        return;
+                    }
+                    if (!Boolean.TRUE.equals(started)) {
+                        setStreamStatus("не підключено", streamUrl);
+                        setStatus("Не вдалося підключити потік");
+                        return;
+                    }
+
+                    nowPlayingLabel.setText("♪ " + (detail == null ? "Інтернет-потік" : detail));
+                    setStreamStatus("підключено", streamUrl);
+                    setStatus("Потік підключено");
+                }));
+    }
+
+    private void setStreamStatus(String state, String detail) {
+        streamStatusLabel.setText("СТАТУС: " + state
+                + "\nURL: " + (detail == null || detail.isBlank() ? "-" : detail));
     }
 
     private void showStationDetails(RadioStation station) {
@@ -976,11 +1388,66 @@ public class MainView extends StackPane {
         setDetailsText(label, null);
     }
 
-    private void updatePlaylistControls() {
-        Playlist active = playlistBox.getValue();
-        deletePlaylistButton.setDisable(active == null
-                || facade.isDefaultPlaylist(active.getId())
-                || playlistBox.getItems().size() <= 1);
+    private void updatePlayerState(PlayerState state) {
+        playPauseButton.setText(state.isPlaying() && !state.isPaused() ? "[||]" : "[>]");
+        trackTable.refresh();
+        updateSeekControls();
+    }
+
+    private void onTrackFinished(boolean streamFinished) {
+        playPauseButton.setText("[>]");
+        if (streamFinished) {
+            setStreamStatus("завершено", null);
+            setStatus("Потік завершено");
+            updateSeekControls();
+            return;
+        }
+
+        Track track = facade.getCurrentTrack();
+        if (facade.isPlaying() && track != null) {
+            showPlayingTrack(track);
+        } else {
+            setStatus("Відтворення завершено");
+            trackTable.refresh();
+        }
+        updateSeekControls();
+    }
+
+    private void updateModeControls() {
+        repeatButton.setText("[Повтор: " + repeatModeText() + "]");
+        shuffleButton.setText("[Зміш: " + (facade.isShuffle() ? "увімк" : "вимк") + "]");
+    }
+
+    private String repeatModeText() {
+        switch (facade.getRepeatMode()) {
+            case ALL:
+                return "усі";
+            case ONE:
+                return "один";
+            default:
+                return "вимк.";
+        }
+    }
+
+    private Slider createEqSlider(int band) {
+        Slider slider = new Slider(Equalizer.MIN_GAIN_DB, Equalizer.MAX_GAIN_DB,
+                facade.getBandGainDb(band));
+        slider.setOrientation(Orientation.VERTICAL);
+        slider.setPrefHeight(170);
+        slider.setBlockIncrement(1);
+        slider.valueProperty().addListener((observable, oldValue, newValue) ->
+                facade.setBandGainDb(band, newValue.floatValue()));
+        return slider;
+    }
+
+    private void updateEqualizerControls() {
+        lowEqSlider.setValue(facade.getBandGainDb(Equalizer.LOW_BAND));
+        midEqSlider.setValue(facade.getBandGainDb(Equalizer.MID_BAND));
+        highEqSlider.setValue(facade.getBandGainDb(Equalizer.HIGH_BAND));
+    }
+
+    private static String formatGain(float gainDb) {
+        return String.format("%+.1f дБ", gainDb);
     }
 
     public void saveState() {
@@ -1000,7 +1467,6 @@ public class MainView extends StackPane {
         try (OutputStream output = Files.newOutputStream(STATE_FILE)) {
             properties.store(output, "Music player state");
         } catch (IOException ignored) {
-            // Стан не збережено, роботі програми це не заважає
         }
     }
 
@@ -1032,410 +1498,54 @@ public class MainView extends StackPane {
             updateEqualizerControls();
             updateSeekControls();
         } catch (IOException | RuntimeException ignored) {
-            // Пошкоджений файл стану не заважає запуску програми
         }
     }
 
-    private Slider createEqSlider(int band) {
-        Slider slider = new Slider(Equalizer.MIN_GAIN_DB, Equalizer.MAX_GAIN_DB,
-                facade.getBandGainDb(band));
-        slider.setPrefWidth(360);
-        slider.setBlockIncrement(1);
-        slider.valueProperty().addListener((observable, oldValue, newValue) ->
-                facade.setBandGainDb(band, newValue.floatValue()));
-        return slider;
+    private String stylesheetUrl() {
+        return getClass().getResource("/ua/kpi/musicplayer/ui/styles.css").toExternalForm();
     }
 
-    private void updateEqualizerControls() {
-        lowEqSlider.setValue(facade.getBandGainDb(Equalizer.LOW_BAND));
-        midEqSlider.setValue(facade.getBandGainDb(Equalizer.MID_BAND));
-        highEqSlider.setValue(facade.getBandGainDb(Equalizer.HIGH_BAND));
+    private static List<RadioStation> presetStations() {
+        return List.of(
+                presetStation("SomaFM Groove Salad", "https://ice1.somafm.com/groovesalad-128-mp3"),
+                presetStation("SomaFM Drone Zone", "https://ice1.somafm.com/dronezone-128-mp3"),
+                presetStation("SomaFM DEF CON", "https://ice1.somafm.com/defcon-128-mp3"),
+                presetStation("FIP", "https://icecast.radiofrance.fr/fip-midfi.mp3"),
+                presetStation("KEXP 90.3", "https://kexp.streamguys1.com/kexp160.aac"));
     }
 
-    private static String formatGain(float gainDb) {
-        return String.format("%+.1f дБ", gainDb);
+    private static RadioStation presetStation(String name, String url) {
+        RadioStation station = new RadioStation();
+        station.setName(name);
+        station.setUrl(url);
+        station.setUrlResolved(url);
+        return station;
     }
 
-    private void seekToSliderValue() {
-        if (!facade.canSeek()) {
-            return;
+    private static String trackTitle(Track track) {
+        String title = track.getTitle();
+        if (hasText(title)) {
+            return Track.hasTimestampPrefix(title) ? Track.normalizeFileName(title) : title.trim();
         }
-
-        try {
-            facade.seekToSeconds(seekSlider.getValue());
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка перемотування: " + e.getMessage());
-        }
-        updateSeekControls();
+        String name = hasText(track.getFileName()) ? track.getFileName() : track.getLocation();
+        String normalized = Track.normalizeFileName(name);
+        return normalized.isEmpty() ? "Без назви" : normalized;
     }
 
-    private void updateSeekControls() {
-        double duration = facade.getDurationSeconds();
-        double position = facade.getCurrentPositionSeconds();
-        boolean seekable = facade.canSeek() && duration > 0;
-
-        seekSlider.setDisable(!seekable);
-        seekSlider.setMax(duration > 0 ? duration : 1);
-        if (!seekSlider.isValueChanging()) {
-            updatingSeekSlider = true;
-            try {
-                seekSlider.setValue(Math.min(position, seekSlider.getMax()));
-            } finally {
-                updatingSeekSlider = false;
-            }
-        }
-
-        double shownPosition = seekSlider.isValueChanging() ? seekSlider.getValue() : position;
-        seekTimeLabel.setText(formatDuration(Math.round(shownPosition * 1000)) + " / "
-                + formatDuration(Math.round(duration * 1000)));
+    private static String orDash(String value) {
+        return hasText(value) ? value.trim() : "-";
     }
 
-    private void chooseFiles() {
-        FileChooser chooser = new FileChooser();
-        chooser.setTitle("Обрати аудіофайли");
-        chooser.getExtensionFilters().add(new FileChooser.ExtensionFilter(
-                "Аудіофайли", "*.mp3", "*.wav", "*.flac", "*.ogg"));
-
-        List<File> files = chooser.showOpenMultipleDialog(getScene().getWindow());
-        if (files == null || files.isEmpty()) {
-            return;
+    private static String trackState(Track track) {
+        String location = track.getLocation();
+        if (hasText(location) && location.startsWith(CACHE_DIR.toString())) {
+            return "[CACHE]";
         }
-
-        List<Track> addedTracks = new ArrayList<>();
-        for (File file : files) {
-            addedTracks.add(AudioMetadataReader.read(file));
-        }
-
-        String saveError = null;
-        try {
-            facade.addTracksAndSave(addedTracks);
-        } catch (RuntimeException e) {
-            saveError = "Не вдалося зберегти треки: " + e.getMessage();
-        }
-
-        refreshTrackList(true);
-        statusLabel.setText(saveError != null ? saveError : "Додано: " + addedTracks.size());
-    }
-
-    private void uploadSelectedTrack() {
-        uploadTrack(trackList.getSelectionModel().getSelectedItem());
-    }
-
-    private void uploadTrack(Track track) {
-        if (track == null) {
-            statusLabel.setText("Виділіть трек для завантаження");
-            return;
-        }
-        if (track.getServerId() > 0) {
-            statusLabel.setText("Трек уже на сервері #" + track.getServerId());
-            return;
-        }
-
-        uploadButton.setDisable(true);
-        statusLabel.setText("Завантаження на сервер...");
-        CompletableFuture.supplyAsync(() -> facade.uploadTrackFile(track))
-                .whenComplete((serverId, error) -> Platform.runLater(() -> {
-                    if (error != null) {
-                        statusLabel.setText("Сервер: " + errorMessage(error));
-                    } else {
-                        statusLabel.setText("На сервері #" + serverId + ": " + track);
-                    }
-                    trackList.refresh();
-                    updateUploadButton();
-                }));
-    }
-
-    private void uploadUnsyncedTracks() {
-        List<Track> tracks = facade.getTracks();
-        if (tracks.isEmpty()) {
-            statusLabel.setText("Список треків порожній");
-            return;
-        }
-
-        uploadAllButton.setDisable(true);
-        uploadButton.setDisable(true);
-        syncButton.setDisable(true);
-        statusLabel.setText("Перевірка треків на сервері...");
-
-        CompletableFuture.supplyAsync(() -> facade.uploadUnsyncedTracks())
-                .whenComplete((result, error) -> Platform.runLater(() -> {
-                    uploadAllButton.setDisable(false);
-                    syncButton.setDisable(false);
-                    if (error != null) {
-                        statusLabel.setText("Сервер: " + errorMessage(error));
-                    } else {
-                        statusLabel.setText(uploadSummary(result));
-                    }
-                    trackList.refresh();
-                    updateUploadButton();
-                }));
-    }
-
-    private static String uploadSummary(TrackUploadResult result) {
-        if (!result.isServerAvailable()) {
-            return "Сервер недоступний — стан треків не перевірено";
-        }
-        if (result.getUploaded() == 0 && result.getFailed() == 0) {
-            return "Усі треки вже на сервері";
-        }
-
-        List<String> parts = new ArrayList<>();
-        addCount(parts, "надіслано треків", result.getUploaded());
-        addCount(parts, "уже були на сервері", result.getSkipped());
-        addCount(parts, "скинуто застарілих позначок", result.getCleared());
-        addCount(parts, "з помилкою", result.getFailed());
-        return "На сервер: " + String.join("; ", parts);
-    }
-
-    private void deleteTrackFromServer(Track track) {
-        if (track == null) {
-            statusLabel.setText("Виділіть трек для видалення з сервера");
-            return;
-        }
-        long serverId = track.getServerId();
-        if (serverId <= 0) {
-            statusLabel.setText("Трек не завантажено на сервер");
-            return;
-        }
-
-        statusLabel.setText("Видалення з сервера...");
-        CompletableFuture.runAsync(() -> facade.deleteTrackFromServer(track))
-                .whenComplete((ignored, error) -> Platform.runLater(() -> {
-                    if (error != null) {
-                        statusLabel.setText("Сервер: " + errorMessage(error));
-                        return;
-                    }
-                    trackList.refresh();
-                    updateUploadButton();
-                    statusLabel.setText("Видалено з сервера #" + serverId + ": " + track);
-                }));
-    }
-
-    private void updateUploadButton() {
-        Track track = trackList.getSelectionModel().getSelectedItem();
-        boolean onServer = track != null && track.getServerId() > 0;
-        uploadButton.setText(onServer ? "На сервері" : "На сервер");
-        uploadButton.setDisable(onServer);
-        uploadButton.setTooltip(new Tooltip(onServer
-                ? "Трек уже завантажено на сервер"
-                : "Завантажити вибраний трек на сервер"));
+        return track.getServerId() > 0 ? "[SRV]" : "[LOC]";
     }
 
     private static boolean hasText(String value) {
         return value != null && !value.isBlank();
-    }
-
-    private static String formatDuration(long durationMs) {
-        long totalSeconds = durationMs / 1000;
-        return String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60);
-    }
-
-    private void updateModeControls() {
-        repeatButton.setText("Повтор: " + repeatModeText());
-        shuffleButton.setText("Перемішування: " + (facade.isShuffle() ? "увімк." : "вимк."));
-    }
-
-    private String repeatModeText() {
-        switch (facade.getRepeatMode()) {
-            case ALL:
-                return "усі";
-            case ONE:
-                return "один";
-            default:
-                return "вимк.";
-        }
-    }
-
-    private void play() {
-        if (facade.getTracks().isEmpty()) {
-            statusLabel.setText("Спочатку додайте аудіофайли");
-            return;
-        }
-
-        int selectedIndex = trackList.getSelectionModel().getSelectedIndex();
-        playTrack(selectedIndex >= 0 ? selectedIndex : facade.getCurrentIndex());
-    }
-
-    private void playContextTrack() {
-        if (contextMenuTrackIndex >= 0 && contextMenuTrackIndex < trackList.getItems().size()) {
-            playTrack(contextMenuTrackIndex);
-        } else {
-            play();
-        }
-    }
-
-    private void playTrack(int index) {
-        try {
-            Track track = facade.playTrackAt(index);
-            if (track == null) {
-                statusLabel.setText("Спочатку оберіть файли");
-                return;
-            }
-            showPlayingTrack(track);
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
-    }
-
-    private void showPlayingTrack(Track track) {
-        pauseButton.setText("Пауза");
-        nowPlayingLabel.setText(track.toString());
-        showTrackDetails(currentDetailsLabel, track);
-        statusLabel.setText("Грає");
-
-        int index = facade.getCurrentIndex();
-        if (index >= 0 && index < trackList.getItems().size()) {
-            trackList.getSelectionModel().clearSelection();
-            trackList.getSelectionModel().select(index);
-        }
-        trackList.refresh();
-        updateSeekControls();
-    }
-
-    private void playNext() {
-        try {
-            Track track = facade.playNext();
-            if (track == null) {
-                statusLabel.setText("Наступного треку немає");
-                return;
-            }
-            showPlayingTrack(track);
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
-    }
-
-    private void playPrevious() {
-        try {
-            Track track = facade.playPrevious();
-            if (track == null) {
-                statusLabel.setText("Попереднього треку немає");
-                return;
-            }
-            showPlayingTrack(track);
-        } catch (RuntimeException e) {
-            statusLabel.setText("Помилка: " + e.getMessage());
-        }
-    }
-
-    private void togglePause() {
-        if (!facade.isPlaying()) {
-            statusLabel.setText("Нічого не грає");
-            return;
-        }
-
-        facade.togglePause();
-        if (facade.isPaused()) {
-            pauseButton.setText("Продовжити");
-            statusLabel.setText("Пауза");
-        } else {
-            pauseButton.setText("Пауза");
-            statusLabel.setText("Грає");
-        }
-    }
-
-    private void stop() {
-        facade.stop();
-        pauseButton.setText("Пауза");
-        statusLabel.setText("Зупинено");
-        updateSeekControls();
-    }
-
-    private void resetNowPlaying() {
-        nowPlayingLabel.setText("Нічого не відтворюється");
-        hideDetails(currentDetailsLabel);
-        pauseButton.setText("Пауза");
-    }
-
-    private void updateNowPlayingFromQueue() {
-        Track current = facade.getCurrentTrack();
-        nowPlayingLabel.setText(current == null ? "Нічого не відтворюється" : current.toString());
-        showTrackDetails(currentDetailsLabel, current);
-        pauseButton.setText("Пауза");
-    }
-
-    private void playSelectedStation() {
-        RadioStation station = stationList.getSelectionModel().getSelectedItem();
-        if (station == null) {
-            statusLabel.setText("Оберіть станцію зі списку");
-            return;
-        }
-
-        String url = station.getPlaybackUrl();
-        if (!hasText(url)) {
-            statusLabel.setText("У станції немає URL потоку");
-            return;
-        }
-
-        streamUrlField.setText(url);
-        playStream(url, stationName(station));
-    }
-
-    private void searchStations() {
-        String query = stationSearchField.getText();
-        if (!hasText(query)) {
-            statusLabel.setText("Введіть назву або тег");
-            return;
-        }
-
-        stationSearchButton.setDisable(true);
-        statusLabel.setText("Пошук...");
-        CompletableFuture.supplyAsync(() -> facade.searchStations(query))
-                .whenComplete((stations, error) -> Platform.runLater(() -> {
-                    stationSearchButton.setDisable(false);
-                    if (error != null) {
-                        statusLabel.setText("Помилка: " + errorMessage(error));
-                        return;
-                    }
-
-                    stationList.getItems().setAll(stations);
-                    showStationDetails(null);
-                    statusLabel.setText(stations.isEmpty()
-                            ? "Нічого не знайдено"
-                            : "Знайдено: " + stations.size());
-                }));
-    }
-
-    private void playStream(String url) {
-        playStream(url, null);
-    }
-
-    private void playStream(String url, String detail) {
-        if (!hasText(url)) {
-            statusLabel.setText("Введіть адресу потоку");
-            return;
-        }
-
-        String streamUrl = url.trim();
-        long request = ++streamRequest;
-        streamPlayButton.setDisable(true);
-        stationPlayButton.setDisable(true);
-        seekSlider.setDisable(true);
-        statusLabel.setText("Підключення...");
-
-        CompletableFuture.supplyAsync(() -> facade.playStream(streamUrl))
-                .whenComplete((started, error) -> Platform.runLater(() -> {
-                    if (request != streamRequest) {
-                        return;
-                    }
-
-                    streamPlayButton.setDisable(false);
-                    stationPlayButton.setDisable(stationList.getSelectionModel().getSelectedItem() == null);
-                    updateSeekControls();
-
-                    if (error != null) {
-                        statusLabel.setText("Помилка: " + errorMessage(error));
-                        return;
-                    }
-                    if (!Boolean.TRUE.equals(started)) {
-                        return;
-                    }
-
-                    pauseButton.setText("Пауза");
-                    nowPlayingLabel.setText(detail == null ? "Інтернет-потік" : detail);
-                    setDetailsText(currentDetailsLabel, "URL: " + streamUrl);
-                    statusLabel.setText("Потік");
-                }));
     }
 
     private static String errorMessage(Throwable error) {
@@ -1443,39 +1553,11 @@ public class MainView extends StackPane {
         return hasText(cause.getMessage()) ? cause.getMessage() : cause.toString();
     }
 
-    private void updatePlayerState(PlayerState state) {
-        pauseButton.setText(state.isPaused() ? "Продовжити" : "Пауза");
-        trackList.refresh();
-        updateSeekControls();
+    private static String formatDuration(long durationMs) {
+        long totalSeconds = durationMs / 1000;
+        return String.format("%02d:%02d", totalSeconds / 60, totalSeconds % 60);
     }
 
-    private void onTrackFinished(boolean streamFinished) {
-        pauseButton.setText("Пауза");
-        if (streamFinished) {
-            statusLabel.setText("Потік завершено");
-            updateSeekControls();
-            return;
-        }
-
-        Track track = facade.getCurrentTrack();
-        if (facade.isPlaying() && track != null) {
-            showPlayingTrack(track);
-        } else {
-            statusLabel.setText("Завершено");
-            trackList.refresh();
-        }
-        updateSeekControls();
-    }
-
-    private void requestClose() {
-        if (stage == null) {
-            return;
-        }
-
-        WindowEvent closeRequest = new WindowEvent(stage, WindowEvent.WINDOW_CLOSE_REQUEST);
-        stage.fireEvent(closeRequest);
-        if (!closeRequest.isConsumed()) {
-            stage.close();
-        }
+    private record IndexedTrack(int index, Track track) {
     }
 }

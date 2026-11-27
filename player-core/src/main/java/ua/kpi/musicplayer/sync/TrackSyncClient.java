@@ -17,10 +17,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
-/**
- * Простий клієнт синхронізації треків із сервером.
- * Сервер очікується за адресою http://localhost:8080 з ресурсом /tracks.
- */
+
 public class TrackSyncClient {
 
     private static final int CONNECT_TIMEOUT_SECONDS = 3;
@@ -53,15 +50,10 @@ public class TrackSyncClient {
     public void deleteTrack(long id) {
         HttpRequest request = requestBuilder("/tracks/" + id).DELETE().build();
         HttpResponse<String> response = send(request);
-        // 404 означає, що трек уже видалено на сервері — для клієнта це успіх
         checkStatus(response, 200, 204, 404);
     }
 
-    /**
-     * Завантажує аудіофайл треку в локальний кеш плеєра.
-     * Ім'я файлу використовується лише для вибору розширення.
-     * Повертає шлях до вже наявного або щойно скачаного файлу.
-     */
+
     public Path downloadTrackFile(long id, String fileNameHint) {
         if (id <= 0) {
             throw new IllegalArgumentException("Некоректний id треку");
@@ -109,10 +101,6 @@ public class TrackSyncClient {
         }
     }
 
-    /**
-     * Завантажує локальний аудіофайл на сервер через POST /tracks/upload.
-     * Повертає створений сервером трек (id, шлях на сервері та ім'я збереженого файлу).
-     */
     public Track uploadTrackFile(Path file, String title, String artist, int durationSeconds) {
         if (file == null || !Files.isRegularFile(file)) {
             throw new IllegalArgumentException("Локальний файл треку не знайдено");

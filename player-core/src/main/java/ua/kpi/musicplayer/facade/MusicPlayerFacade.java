@@ -47,11 +47,6 @@ public class MusicPlayerFacade {
     private long activePlaylistId = -1;
     private long defaultPlaylistId = -1;
 
-    /**
-     * Локальний шлях файлу (у тому числі шлях у кеші) → шлях, під яким трек
-     * зберігається на сервері. Потрібно, щоб у плейлистах на сервері не
-     * осідали локальні та кеш-шляхи конкретного клієнта.
-     */
     private final Map<String, String> serverLocationByLocal = new HashMap<>();
 
     public void addObserver(PlayerObserver observer) {
@@ -470,12 +465,7 @@ public class MusicPlayerFacade {
         return radioBrowserClient.search(query);
     }
 
-    /**
-     * Синхронізує плейлисти з сервером. Якщо сервер недоступний, повертає
-     * результат з ознакою недоступності, не порушуючи локальну роботу.
-     * Плейлисти надсилаються лише тоді, коли їхній вміст відрізняється від
-     * серверного, тому повторна синхронізація не створює дублів.
-     */
+
     public PlaylistSyncResult synchronizePlaylists() {
         try {
             List<PlaylistSyncClient.RemotePlaylist> remotePlaylists =
@@ -499,8 +489,6 @@ public class MusicPlayerFacade {
                             || knownLocations.contains(location)) {
                         continue;
                     }
-                    // Не імпортуємо посилання на трек, якого немає на сервері
-                    // і якого немає локально, щоб у плейлисті не було «мертвих» записів.
                     if (!serverLocationByLocal.containsValue(remoteLocation)
                             && !isLocalFile(location)) {
                         continue;
@@ -618,8 +606,6 @@ public class MusicPlayerFacade {
             return tracks.get(index);
         }
 
-        // Після перезапуску сервера id змінюються, тому зіставляємо ще й за
-        // нормалізованим ім'ям файлу без службового timestamp-префікса.
         String fileName = normalizedFileNameOf(track);
         if (!fileName.isEmpty()) {
             for (Track candidate : tracks) {
@@ -666,11 +652,6 @@ public class MusicPlayerFacade {
         return value != null && !value.isBlank();
     }
 
-    /**
-     * Читає реальні метадані з наявного локального чи кешованого файлу треку
-     * і заповнює ними трек. Використовується, коли сервер повернув трек без
-     * виконавця, назви або тривалості.
-     */
     private static void applyMetadataFromFile(Track track) {
         if (track == null) {
             return;
@@ -719,8 +700,6 @@ public class MusicPlayerFacade {
         List<Track> localTracks = storage.loadTracks(getDefaultPlaylistId());
         serverLocationByLocal.clear();
 
-        // Треки в черзі — окремі об'єкти, тому запам'ятовуємо їх за початковим
-        // шляхом, щоб після кешування оновити і їх (інакше UI показує застарілі дані).
         Map<String, Track> queuedByLocation = new HashMap<>();
         for (Track queued : queue.getTracks()) {
             if (queued.getLocation() != null) {
@@ -735,8 +714,6 @@ public class MusicPlayerFacade {
             }
         }
 
-        // Якщо локальний трек посилається на id, якого вже немає на сервері,
-        // знімаємо позначку, щоб UI не показував хибно «На сервері».
         int cleared = 0;
         Set<Track> clearedTracks = Collections.newSetFromMap(new IdentityHashMap<>());
         for (Track track : localTracks) {
@@ -748,17 +725,13 @@ public class MusicPlayerFacade {
                 cleared++;
             }
         }
-
-        // Синхронізація лише додає дані: локальні файли надсилаються на сервер,
-        // а серверні треки завантажуються в локальний кеш. Тому видалення на
-        // іншому клієнті не затирає треки цього клієнта.
         int uploaded = 0;
         int failed = 0;
         for (Track track : localTracks) {
             boolean clearedTrack = clearedTracks.contains(track);
             Track remote = findMatchingTrack(remoteTracks, track);
             if (remote == null) {
-                // Треки, видалені на сервері, повторно не завантажуємо.
+                // Треки, видалені на сервері, повторно не завантажуємо
                 if (clearedTrack) {
                     continue;
                 }
@@ -791,8 +764,6 @@ public class MusicPlayerFacade {
             copyToQueued(queuedByLocation, localLocation, track);
         }
 
-        // Нові серверні треки одразу кешуються локально. Якщо файл на сервері
-        // відсутній, трек не додаємо, щоб не плодити «мертві» записи в БД.
         List<Track> downloadedTracks = new ArrayList<>();
         Set<Long> handledRemoteIds = new HashSet<>();
         for (Track remote : remoteTracks) {
@@ -840,12 +811,6 @@ public class MusicPlayerFacade {
         queued.setDurationMs(source.getDurationMs());
     }
 
-    /**
-     * Завантажує на сервер усі треки поточного списку, які ще не мають serverId.
-     * Перед цим звіряє позначки з сервером: якщо трек із serverId уже відсутній
-     * на сервері, позначка скидається, і трек завантажується заново.
-     * Помилка окремого треку не зупиняє завантаження решти.
-     */
     public TrackUploadResult uploadUnsyncedTracks() {
         List<Track> tracks = new ArrayList<>(queue.getTracks());
         boolean serverAvailable = true;
@@ -882,10 +847,6 @@ public class MusicPlayerFacade {
         return new TrackUploadResult(uploaded, skipped, cleared, failed, serverAvailable);
     }
 
-    /**
-     * Скидає serverId у треків, яких уже немає на сервері, щоб вони не вважалися
-     * завантаженими. Позначку прибирає і в БД.
-     */
     private int clearMissingServerIds(List<Track> tracks) {
         Set<Long> remoteServerIds = new HashSet<>();
         for (Track remote : syncClient.fetchTracks()) {
@@ -911,12 +872,6 @@ public class MusicPlayerFacade {
         return cleared;
     }
 
-    /**
-     * Якщо локального файлу немає, намагається скачати його з сервера в кеш
-     * (~/musicplayer-cache/) і зберегти новий шлях у БД. Повторні виклики
-     * використовують уже наявний кеш без звернення до мережі.
-     * Відсутність сервера не перериває роботу — трек лишається зі старим шляхом.
-     */
     private void prepareTrackFile(Track track) {
         String location = track.getLocation();
         if (hasLocalFile(track)) {

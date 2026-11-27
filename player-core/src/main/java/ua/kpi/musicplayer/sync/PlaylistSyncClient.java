@@ -10,10 +10,6 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * Простий клієнт синхронізації плейлистів із сервером.
- * Сервер очікується за адресою http://localhost:8080 з ресурсом /playlists.
- */
 public class PlaylistSyncClient {
 
     private static final int CONNECT_TIMEOUT_SECONDS = 3;
