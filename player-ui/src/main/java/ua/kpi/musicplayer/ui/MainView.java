@@ -90,6 +90,8 @@ public class MainView extends StackPane {
     private final Button deletePlaylistButton = new Button("Видалити");
     private final Button syncButton = new Button("Синхронізувати");
     private final Button removeSelectedButton = new Button("Видалити");
+    private final Button uploadButton = new Button("На сервер");
+    private final Button uploadAllButton = new Button("Усі на сервер");
     private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
     private final ComboBox<Playlist> playlistBox = new ComboBox<>();
     private final Slider seekSlider = new Slider(0, 1, 0);
@@ -163,6 +165,10 @@ public class MainView extends StackPane {
         removeSelectedButton.getStyleClass().add("danger-button");
         removeSelectedButton.setOnAction(event -> removeSelectedTracks());
         removeSelectedButton.setTooltip(new Tooltip("Видалити вибрані треки"));
+        uploadButton.setOnAction(event -> uploadSelectedTrack());
+        uploadButton.setTooltip(new Tooltip("Завантажити вибраний трек на сервер"));
+        uploadAllButton.setOnAction(event -> uploadUnsyncedTracks());
+        uploadAllButton.setTooltip(new Tooltip("Завантажити всі треки поточного списку, яких немає на сервері"));
 
         repeatButton.setOnAction(event -> {
             facade.cycleRepeatMode();
@@ -358,7 +364,7 @@ public class MainView extends StackPane {
         playSelectedButton.getStyleClass().add("accent-button");
         playSelectedButton.setOnAction(event -> play());
         HBox manageRow = new HBox(8, createChooseFilesButton(), playSelectedButton,
-                removeSelectedButton, manageSpacer, selectionLabel);
+                uploadButton, uploadAllButton, removeSelectedButton, manageSpacer, selectionLabel);
         manageRow.setAlignment(Pos.CENTER_LEFT);
 
         VBox.setVgrow(trackList, Priority.ALWAYS);
@@ -523,11 +529,19 @@ public class MainView extends StackPane {
         Menu addMenu = new Menu("Додати в плейлист");
         Menu moveMenu = new Menu("Перенести в плейлист");
 
+        MenuItem uploadItem = new MenuItem("Завантажити на сервер");
+        uploadItem.setOnAction(event -> uploadTrack(contextTrack()));
+
+        MenuItem deleteFromServerItem = new MenuItem("Видалити з сервера");
+        deleteFromServerItem.getStyleClass().add("danger-menu-item");
+        deleteFromServerItem.setOnAction(event -> deleteTrackFromServer(contextTrack()));
+
         MenuItem removeItem = new MenuItem("Видалити");
         removeItem.getStyleClass().add("danger-menu-item");
         removeItem.setOnAction(event -> removeSelectedTracks());
 
         ContextMenu menu = new ContextMenu(playItem, addMenu, moveMenu,
+                new SeparatorMenuItem(), uploadItem, deleteFromServerItem,
                 new SeparatorMenuItem(), removeItem);
         menu.setOnShowing(event -> {
             boolean hasSelection = !trackList.getSelectionModel().getSelectedItems().isEmpty();
@@ -540,8 +554,20 @@ public class MainView extends StackPane {
                 fillPlaylistMenu(addMenu, false);
                 fillPlaylistMenu(moveMenu, true);
             }
+
+            Track track = contextTrack();
+            boolean onServer = track != null && track.getServerId() > 0;
+            uploadItem.setVisible(!onServer);
+            deleteFromServerItem.setVisible(onServer);
         });
         return menu;
+    }
+
+    private Track contextTrack() {
+        if (contextMenuTrackIndex >= 0 && contextMenuTrackIndex < trackList.getItems().size()) {
+            return trackList.getItems().get(contextMenuTrackIndex);
+        }
+        return trackList.getSelectionModel().getSelectedItem();
     }
 
     private void fillPlaylistMenu(Menu menu, boolean move) {
@@ -739,10 +765,20 @@ public class MainView extends StackPane {
                 return;
             }
 
-            statusLabel.setText("Синхронізовано: треки +" + outcome.tracks().getUploaded()
+            boolean noChanges = outcome.tracks().getUploaded() == 0
+                    && outcome.tracks().getDownloaded() == 0
+                    && outcome.tracks().getCleared() == 0
+                    && outcome.playlists().getUploaded() == 0
+                    && outcome.playlists().getDownloaded() == 0;
+            statusLabel.setText(noChanges
+                    ? "Синхронізовано — без змін"
+                    : "Синхронізовано: треки +" + outcome.tracks().getUploaded()
                     + "/-" + outcome.tracks().getDownloaded()
                     + ", плейлисти +" + outcome.playlists().getUploaded()
-                    + "/-" + outcome.playlists().getDownloaded());
+                    + "/-" + outcome.playlists().getDownloaded()
+                    + (outcome.tracks().getCleared() > 0
+                    ? ", відсутні на сервері: " + outcome.tracks().getCleared()
+                    : ""));
         }));
     }
 
@@ -858,6 +894,7 @@ public class MainView extends StackPane {
         } else {
             hideDetails(playlistDetailsLabel);
         }
+        updateUploadButton();
     }
 
     private void showTrackDetails(Label label, Track track) {
@@ -1060,6 +1097,110 @@ public class MainView extends StackPane {
 
         refreshTrackList(true);
         statusLabel.setText(saveError != null ? saveError : "Додано: " + addedTracks.size());
+    }
+
+    private void uploadSelectedTrack() {
+        uploadTrack(trackList.getSelectionModel().getSelectedItem());
+    }
+
+    private void uploadTrack(Track track) {
+        if (track == null) {
+            statusLabel.setText("Виділіть трек для завантаження");
+            return;
+        }
+        if (track.getServerId() > 0) {
+            statusLabel.setText("Трек уже на сервері #" + track.getServerId());
+            return;
+        }
+
+        uploadButton.setDisable(true);
+        statusLabel.setText("Завантаження на сервер...");
+        CompletableFuture.supplyAsync(() -> facade.uploadTrackFile(track))
+                .whenComplete((serverId, error) -> Platform.runLater(() -> {
+                    if (error != null) {
+                        statusLabel.setText("Сервер: " + errorMessage(error));
+                    } else {
+                        statusLabel.setText("На сервері #" + serverId + ": " + track);
+                    }
+                    trackList.refresh();
+                    updateUploadButton();
+                }));
+    }
+
+    private void uploadUnsyncedTracks() {
+        List<Track> tracks = facade.getTracks();
+        if (tracks.isEmpty()) {
+            statusLabel.setText("Список треків порожній");
+            return;
+        }
+
+        boolean hasUnsynced = false;
+        for (Track track : tracks) {
+            if (track.getServerId() <= 0) {
+                hasUnsynced = true;
+                break;
+            }
+        }
+        if (!hasUnsynced) {
+            statusLabel.setText("Усі треки вже на сервері");
+            return;
+        }
+
+        uploadAllButton.setDisable(true);
+        uploadButton.setDisable(true);
+        syncButton.setDisable(true);
+        statusLabel.setText("Завантаження всіх треків на сервер...");
+
+        CompletableFuture.supplyAsync(() -> facade.uploadUnsyncedTracks())
+                .whenComplete((result, error) -> Platform.runLater(() -> {
+                    uploadAllButton.setDisable(false);
+                    syncButton.setDisable(false);
+                    if (error != null) {
+                        statusLabel.setText("Сервер: " + errorMessage(error));
+                    } else {
+                        statusLabel.setText("На сервер: " + result.getUploaded()
+                                + (result.getSkipped() > 0
+                                ? ", уже були: " + result.getSkipped() : "")
+                                + (result.getFailed() > 0
+                                ? ", з помилкою: " + result.getFailed() : ""));
+                    }
+                    trackList.refresh();
+                    updateUploadButton();
+                }));
+    }
+
+    private void deleteTrackFromServer(Track track) {
+        if (track == null) {
+            statusLabel.setText("Виділіть трек для видалення з сервера");
+            return;
+        }
+        long serverId = track.getServerId();
+        if (serverId <= 0) {
+            statusLabel.setText("Трек не завантажено на сервер");
+            return;
+        }
+
+        statusLabel.setText("Видалення з сервера...");
+        CompletableFuture.runAsync(() -> facade.deleteTrackFromServer(track))
+                .whenComplete((ignored, error) -> Platform.runLater(() -> {
+                    if (error != null) {
+                        statusLabel.setText("Сервер: " + errorMessage(error));
+                        return;
+                    }
+                    trackList.refresh();
+                    updateUploadButton();
+                    statusLabel.setText("Видалено з сервера #" + serverId + ": " + track);
+                }));
+    }
+
+    private void updateUploadButton() {
+        Track track = trackList.getSelectionModel().getSelectedItem();
+        boolean onServer = track != null && track.getServerId() > 0;
+        uploadButton.setText(onServer ? "На сервері" : "На сервер");
+        uploadButton.setDisable(onServer);
+        uploadButton.setTooltip(new Tooltip(onServer
+                ? "Трек уже завантажено на сервер"
+                : "Завантажити вибраний трек на сервер"));
     }
 
     private static boolean hasText(String value) {

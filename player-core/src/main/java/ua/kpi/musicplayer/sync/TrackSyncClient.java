@@ -2,15 +2,20 @@ package ua.kpi.musicplayer.sync;
 
 import ua.kpi.musicplayer.model.Track;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Простий клієнт синхронізації треків із сервером.
@@ -20,6 +25,9 @@ public class TrackSyncClient {
 
     private static final int CONNECT_TIMEOUT_SECONDS = 3;
     private static final int REQUEST_TIMEOUT_SECONDS = 5;
+    private static final int FILE_TIMEOUT_SECONDS = 60;
+    private static final Path CACHE_DIR =
+            Path.of(System.getProperty("user.home"), "musicplayer-cache");
 
     private final String apiBase;
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -62,6 +70,122 @@ public class TrackSyncClient {
         HttpResponse<String> response = send(request);
         // 404 означає, що трек уже видалено на сервері — для клієнта це успіх
         checkStatus(response, 200, 204, 404);
+    }
+
+    /**
+     * Завантажує аудіофайл треку в локальний кеш плеєра.
+     * Повертає шлях до вже наявного або щойно скачаного файлу.
+     */
+    public Path downloadTrackFile(long id, String fileName) {
+        if (id <= 0) {
+            throw new IllegalArgumentException("Некоректний id треку");
+        }
+
+        Path target = CACHE_DIR.resolve("track-" + id + fileExtension(fileName));
+        try {
+            if (Files.isRegularFile(target) && Files.size(target) > 0) {
+                return target;
+            }
+
+            Files.createDirectories(CACHE_DIR);
+            Path temp = target.resolveSibling(target.getFileName() + ".part");
+            HttpRequest request = HttpRequest.newBuilder(
+                            URI.create(apiBase + "/tracks/" + id + "/file"))
+                    .header("Accept", "*/*")
+                    .timeout(Duration.ofSeconds(FILE_TIMEOUT_SECONDS))
+                    .GET()
+                    .build();
+
+            HttpResponse<Path> response;
+            try {
+                response = httpClient.send(request, HttpResponse.BodyHandlers.ofFile(temp));
+            } catch (IOException e) {
+                throw new IllegalStateException("Сервер недоступний за адресою " + apiBase, e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException("Запит до сервера перервано", e);
+            }
+
+            if (response.statusCode() != 200) {
+                Files.deleteIfExists(temp);
+                throw new IllegalStateException("Сервер повернув код " + response.statusCode());
+            }
+
+            try {
+                Files.move(temp, target, StandardCopyOption.REPLACE_EXISTING);
+            } catch (IOException e) {
+                Files.deleteIfExists(temp);
+                throw new IllegalStateException("Не вдалося зберегти файл треку", e);
+            }
+            return target;
+        } catch (IOException e) {
+            throw new IllegalStateException("Не вдалося завантажити файл треку", e);
+        }
+    }
+
+    /**
+     * Завантажує локальний аудіофайл на сервер через POST /tracks/upload.
+     * Повертає id створеного на сервері треку.
+     */
+    public long uploadTrackFile(Path file, String title, String artist, int durationSeconds) {
+        if (file == null || !Files.isRegularFile(file)) {
+            throw new IllegalArgumentException("Локальний файл треку не знайдено");
+        }
+
+        String boundary = "----MusicPlayer" + System.currentTimeMillis();
+        ByteArrayOutputStream body = new ByteArrayOutputStream();
+        try {
+            writeTextPart(body, boundary, "title", title);
+            writeTextPart(body, boundary, "artist", artist);
+            writeTextPart(body, boundary, "durationSeconds",
+                    String.valueOf(Math.max(0, durationSeconds)));
+            writeFilePart(body, boundary, file);
+            body.write(("--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            throw new IllegalStateException("Не вдалося підготувати файл до завантаження", e);
+        }
+
+        HttpRequest request = requestBuilder("/tracks/upload")
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .timeout(Duration.ofSeconds(FILE_TIMEOUT_SECONDS))
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build();
+        HttpResponse<String> response = send(request);
+        checkStatus(response, 200, 201);
+        return readLong(response.body(), "id");
+    }
+
+    private static void writeTextPart(ByteArrayOutputStream body, String boundary,
+                                      String name, String value) throws IOException {
+        String text = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"" + name + "\"\r\n\r\n"
+                + (value == null ? "" : value) + "\r\n";
+        body.write(text.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void writeFilePart(ByteArrayOutputStream body, String boundary, Path file)
+            throws IOException {
+        String fileName = file.getFileName() == null ? "track" : file.getFileName().toString();
+        fileName = fileName.replace("\"", "_").replace("\r", " ").replace("\n", " ");
+        String headers = "--" + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + fileName + "\"\r\n"
+                + "Content-Type: application/octet-stream\r\n\r\n";
+        body.write(headers.getBytes(StandardCharsets.UTF_8));
+        Files.copy(file, body);
+        body.write("\r\n".getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static String fileExtension(String fileName) {
+        if (fileName != null) {
+            int dot = fileName.lastIndexOf('.');
+            if (dot > 0 && dot < fileName.length() - 1) {
+                String extension = fileName.substring(dot);
+                if (extension.matches("\\.[A-Za-z0-9]{1,8}")) {
+                    return extension.toLowerCase(Locale.ROOT);
+                }
+            }
+        }
+        return ".mp3";
     }
 
     private HttpRequest.Builder requestBuilder(String path) {
@@ -128,18 +252,23 @@ public class TrackSyncClient {
     private static List<Track> parseTracks(String json) {
         List<Track> tracks = new ArrayList<>();
         for (String object : splitObjects(json)) {
+            long serverId = readLong(object, "id");
             String location = readString(object, "location");
-            if (location == null || location.isBlank()) {
+            String fileName = readString(object, "fileName");
+            if (serverId <= 0
+                    && (location == null || location.isBlank())
+                    && (fileName == null || fileName.isBlank())) {
                 continue;
             }
 
             Track track = new Track();
-            track.setServerId(readLong(object, "id"));
+            track.setServerId(serverId);
             track.setTitle(readString(object, "title"));
             track.setArtist(readString(object, "artist"));
             track.setAlbum(readString(object, "album"));
             track.setDurationMs(readLong(object, "durationMs"));
-            track.setLocation(location);
+            track.setLocation(location == null ? "" : location);
+            track.setFileName(fileName);
             tracks.add(track);
         }
         return tracks;

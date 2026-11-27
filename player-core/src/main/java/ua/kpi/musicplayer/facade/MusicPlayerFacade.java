@@ -15,9 +15,16 @@ import ua.kpi.musicplayer.sync.PlaylistSyncClient;
 import ua.kpi.musicplayer.sync.PlaylistSyncResult;
 import ua.kpi.musicplayer.sync.TrackSyncClient;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
+import ua.kpi.musicplayer.sync.TrackUploadResult;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
@@ -259,6 +266,7 @@ public class MusicPlayerFacade {
             return null;
         }
         currentStreamUrl = null;
+        prepareTrackFile(track);
         player.play(track);
         notifyObservers();
         return track;
@@ -516,27 +524,70 @@ public class MusicPlayerFacade {
         return null;
     }
 
+    private static Track findMatchingTrack(List<Track> tracks, Track track) {
+        if (track.getServerId() > 0) {
+            for (Track candidate : tracks) {
+                if (candidate.getServerId() == track.getServerId()) {
+                    return candidate;
+                }
+            }
+        }
+
+        int index = tracks.indexOf(track);
+        return index >= 0 ? tracks.get(index) : null;
+    }
+
     public TrackSyncResult synchronizeTracks() {
         List<Track> remoteTracks = syncClient.fetchTracks();
         List<Track> localTracks = storage.loadTracks(getDefaultPlaylistId());
+
+        Set<Long> remoteServerIds = new HashSet<>();
+        for (Track remote : remoteTracks) {
+            if (remote.getServerId() > 0) {
+                remoteServerIds.add(remote.getServerId());
+            }
+        }
+
+        // Якщо локальний трек посилається на id, якого вже немає на сервері,
+        // знімаємо позначку, щоб UI не показував хибно «На сервері».
+        int cleared = 0;
+        Set<Track> clearedTracks = Collections.newSetFromMap(new IdentityHashMap<>());
+        for (Track track : localTracks) {
+            if (track.getServerId() > 0 && !remoteServerIds.contains(track.getServerId())) {
+                track.setServerId(0);
+                storage.clearTrackServerId(track.getLocation());
+                clearedTracks.add(track);
+                cleared++;
+            }
+        }
 
         // Синхронізація лише додає дані: локальні треки надсилаються, якщо їх немає
         // на сервері, а серверні треки ніколи не видаляються. Тому видалення на
         // іншому клієнті не затирає треки цього клієнта.
         int uploaded = 0;
         for (Track track : localTracks) {
-            int remoteIndex = remoteTracks.indexOf(track);
-            if (remoteIndex < 0) {
+            if (clearedTracks.contains(track)) {
+                continue;
+            }
+
+            Track remote = findMatchingTrack(remoteTracks, track);
+            if (remote == null) {
                 syncClient.uploadTrack(track);
                 uploaded++;
+                storage.updateTrackServerId(track.getLocation(), track.getServerId());
             } else {
-                track.setServerId(remoteTracks.get(remoteIndex).getServerId());
+                track.setServerId(remote.getServerId());
+                track.setFileName(remote.getFileName());
+                storage.updateTrackServerId(track.getLocation(), track.getServerId());
+                prepareTrackFile(track);
             }
         }
 
         List<Track> downloadedTracks = new ArrayList<>();
         for (Track track : remoteTracks) {
-            if (!localTracks.contains(track) && !downloadedTracks.contains(track)) {
+            if (findMatchingTrack(localTracks, track) == null
+                    && !downloadedTracks.contains(track)) {
+                prepareTrackFile(track);
                 downloadedTracks.add(track);
             }
         }
@@ -546,14 +597,113 @@ public class MusicPlayerFacade {
         }
         applyServerIds(localTracks);
 
-        return new TrackSyncResult(uploaded, downloadedTracks.size());
+        return new TrackSyncResult(uploaded, downloadedTracks.size(), cleared);
+    }
+
+    /**
+     * Завантажує на сервер усі треки поточного списку, які ще не мають serverId.
+     * Помилка окремого треку не зупиняє завантаження решти.
+     */
+    public TrackUploadResult uploadUnsyncedTracks() {
+        List<Track> tracks = new ArrayList<>(queue.getTracks());
+        int uploaded = 0;
+        int skipped = 0;
+        int failed = 0;
+
+        for (Track track : tracks) {
+            if (track.getServerId() > 0) {
+                skipped++;
+                continue;
+            }
+
+            try {
+                uploadTrackFile(track);
+                uploaded++;
+            } catch (RuntimeException e) {
+                failed++;
+            }
+        }
+
+        return new TrackUploadResult(uploaded, skipped, failed);
+    }
+
+    /**
+     * Якщо локального файлу немає, намагається скачати його з сервера в кеш.
+     * Відсутність сервера не перериває роботу — трек лишається зі старим шляхом.
+     */
+    private boolean prepareTrackFile(Track track) {
+        String location = track.getLocation();
+        Path localFile = localPath(location);
+        if (localFile != null && Files.isRegularFile(localFile)) {
+            return false;
+        }
+        if (track.getServerId() <= 0) {
+            return false;
+        }
+
+        try {
+            Path downloaded = syncClient.downloadTrackFile(
+                    track.getServerId(), track.getFileName());
+            track.setLocation(downloaded.toString());
+            if (location != null && !location.isBlank()) {
+                storage.updateTrackLocation(location, downloaded.toString());
+            }
+            return true;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
+    }
+
+    public long uploadTrackFile(Track track) {
+        if (track == null) {
+            throw new IllegalArgumentException("Трек не вибрано");
+        }
+
+        prepareTrackFile(track);
+        Path file = localPath(track.getLocation());
+        if (file == null || !Files.isRegularFile(file)) {
+            throw new IllegalStateException("Локальний файл треку не знайдено");
+        }
+
+        int durationSeconds = (int) Math.max(0, Math.round(track.getDurationMs() / 1000.0));
+        long serverId = syncClient.uploadTrackFile(
+                file, track.getTitle(), track.getArtist(), durationSeconds);
+        if (serverId > 0) {
+            track.setServerId(serverId);
+            storage.updateTrackServerId(track.getLocation(), serverId);
+        }
+        return serverId;
+    }
+
+    public void deleteTrackFromServer(Track track) {
+        if (track == null || track.getServerId() <= 0) {
+            throw new IllegalArgumentException("Трек не завантажено на сервер");
+        }
+
+        syncClient.deleteTrack(track.getServerId());
+        track.setServerId(0);
+        storage.clearTrackServerId(track.getLocation());
+    }
+
+    private static Path localPath(String location) {
+        if (location == null || location.isBlank()) {
+            return null;
+        }
+        try {
+            return Path.of(location);
+        } catch (RuntimeException e) {
+            return null;
+        }
     }
 
     private void applyServerIds(List<Track> tracksWithIds) {
         for (Track queued : queue.getTracks()) {
             int index = tracksWithIds.indexOf(queued);
             if (index >= 0) {
-                queued.setServerId(tracksWithIds.get(index).getServerId());
+                Track source = tracksWithIds.get(index);
+                queued.setServerId(source.getServerId());
+                queued.setFileName(source.getFileName());
+                queued.setLocation(source.getLocation());
             }
         }
     }

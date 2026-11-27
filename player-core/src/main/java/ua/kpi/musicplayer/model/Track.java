@@ -11,6 +11,7 @@ public class Track {
     private String album;
     private long durationMs;
     private String location;
+    private String fileName;
     private long serverId;
 
     public Track() {
@@ -61,6 +62,14 @@ public class Track {
 
     public void setLocation(String location) {
         this.location = location;
+    }
+
+    public String getFileName() {
+        return fileName;
+    }
+
+    public void setFileName(String fileName) {
+        this.fileName = fileName;
     }
 
     public long getServerId() {
