@@ -11,7 +11,9 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 public class TrackStorage {
 
@@ -75,11 +77,67 @@ public class TrackStorage {
 
                 try (ResultSet keys = insert.getGeneratedKeys()) {
                     keys.next();
-                    return new Playlist(keys.getLong(1), playlistName);
+                    long playlistId = keys.getLong(1);
+                    unmarkPlaylistDeleted(connection, playlistName);
+                    return new Playlist(playlistId, playlistName);
                 }
             }
         } catch (SQLException e) {
             throw new IllegalStateException("Не вдалося створити плейлист", e);
+        }
+    }
+
+    public void markPlaylistDeleted(String name) {
+        String playlistName = name == null ? "" : name.trim();
+        if (playlistName.isEmpty()) {
+            return;
+        }
+
+        String sql = "INSERT OR IGNORE INTO deleted_playlists (name) VALUES (?)";
+        try (Connection connection = connect();
+             PreparedStatement insert = connection.prepareStatement(sql)) {
+            insert.setString(1, playlistName);
+            insert.executeUpdate();
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося зберегти позначку видаленого плейлиста", e);
+        }
+    }
+
+    public void unmarkPlaylistDeleted(String name) {
+        String playlistName = name == null ? "" : name.trim();
+        if (playlistName.isEmpty()) {
+            return;
+        }
+
+        try (Connection connection = connect()) {
+            unmarkPlaylistDeleted(connection, playlistName);
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося прибрати позначку видаленого плейлиста", e);
+        }
+    }
+
+    public Set<String> getDeletedPlaylistNames() {
+        Set<String> names = new HashSet<>();
+        String sql = "SELECT name FROM deleted_playlists";
+
+        try (Connection connection = connect();
+             Statement statement = connection.createStatement();
+             ResultSet resultSet = statement.executeQuery(sql)) {
+            while (resultSet.next()) {
+                names.add(resultSet.getString("name"));
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException("Не вдалося завантажити позначки видалених плейлистів", e);
+        }
+
+        return names;
+    }
+
+    private void unmarkPlaylistDeleted(Connection connection, String name) throws SQLException {
+        try (PreparedStatement delete = connection.prepareStatement(
+                "DELETE FROM deleted_playlists WHERE name = ?")) {
+            delete.setString(1, name);
+            delete.executeUpdate();
         }
     }
 
@@ -573,11 +631,17 @@ public class TrackStorage {
                     FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
                 )
                 """;
+        String deletedPlaylistsSql = """
+                CREATE TABLE IF NOT EXISTS deleted_playlists (
+                    name TEXT PRIMARY KEY
+                )
+                """;
 
         try (Statement statement = connection.createStatement()) {
             statement.executeUpdate(tracksSql);
             statement.executeUpdate(playlistsSql);
             statement.executeUpdate(playlistTracksSql);
+            statement.executeUpdate(deletedPlaylistsSql);
         }
     }
 

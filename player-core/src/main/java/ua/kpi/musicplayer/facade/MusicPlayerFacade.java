@@ -140,8 +140,13 @@ public class MusicPlayerFacade {
 
         boolean activeDeleted = activePlaylistId == playlistId;
         Track current = activeDeleted ? queue.getCurrentTrack() : null;
+        String deletedName = findPlaylistName(playlistId);
 
         storage.deletePlaylist(playlistId);
+        if (deletedName != null) {
+            storage.markPlaylistDeleted(deletedName);
+            deleteRemotePlaylist(deletedName);
+        }
 
         long defaultId = getDefaultPlaylistId();
         if (viewedPlaylistId == playlistId || viewedPlaylistId <= 0) {
@@ -155,6 +160,26 @@ public class MusicPlayerFacade {
             queue.setCurrentIndex(current == null ? -1 : defaultTracks.indexOf(current));
         }
         notifyObservers();
+    }
+
+    private String findPlaylistName(long playlistId) {
+        for (Playlist playlist : storage.loadPlaylists()) {
+            if (playlist.getId() == playlistId) {
+                return playlist.getName();
+            }
+        }
+        return null;
+    }
+
+    private void deleteRemotePlaylist(String name) {
+        CompletableFuture.runAsync(() -> {
+            try {
+                syncClient.deletePlaylist(name);
+                storage.unmarkPlaylistDeleted(name);
+            } catch (RuntimeException ignored) {
+                // Сервер недоступний — назва лишається в deleted_playlists до синхронізації
+            }
+        });
     }
 
     public void previewPlaylist(long playlistId) {
@@ -609,9 +634,21 @@ public class MusicPlayerFacade {
             List<PlaylistSyncClient.RemotePlaylist> remotePlaylists =
                     playlistSyncClient.fetchPlaylists();
             List<Playlist> localPlaylists = storage.loadPlaylists();
+            Set<String> deletedNames = storage.getDeletedPlaylistNames();
 
             int downloaded = 0;
             for (PlaylistSyncClient.RemotePlaylist remote : remotePlaylists) {
+                if (deletedNames.contains(remote.getName())) {
+                    try {
+                        syncClient.deletePlaylist(remote.getName());
+                        storage.unmarkPlaylistDeleted(remote.getName());
+                        deletedNames.remove(remote.getName());
+                    } catch (RuntimeException ignored) {
+                        // Не вдалося видалити на сервері — спробуємо під час наступної синхронізації
+                    }
+                    continue;
+                }
+
                 Playlist local = findPlaylistByName(localPlaylists, remote.getName());
                 if (local == null) {
                     local = storage.createPlaylist(remote.getName());

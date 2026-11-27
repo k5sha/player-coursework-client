@@ -64,6 +64,34 @@ public class TrackSyncClient {
         checkStatus(response, 200, 204, 404);
     }
 
+    public void deletePlaylist(String name) {
+        if (name == null || name.isBlank()) {
+            return;
+        }
+
+        HttpRequest listRequest = requestBuilder("/playlists").GET().build();
+        HttpResponse<String> listResponse = send(listRequest);
+        checkStatus(listResponse, 200);
+
+        long playlistId = findPlaylistIdByName(listResponse.body(), name.trim());
+        if (playlistId <= 0) {
+            return;
+        }
+
+        HttpRequest deleteRequest = requestBuilder("/playlists/" + playlistId).DELETE().build();
+        HttpResponse<String> deleteResponse = send(deleteRequest);
+        checkStatus(deleteResponse, 200, 204, 404);
+    }
+
+    private static long findPlaylistIdByName(String json, String name) {
+        for (String object : splitObjects(json)) {
+            if (name.equals(readString(object, "name"))) {
+                return readLong(object, "id");
+            }
+        }
+        return 0;
+    }
+
 
     public Path downloadTrackFile(long id, String fileNameHint) {
         if (id <= 0) {
