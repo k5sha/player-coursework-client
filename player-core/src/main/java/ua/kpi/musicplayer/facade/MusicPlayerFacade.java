@@ -44,6 +44,7 @@ public class MusicPlayerFacade {
     private volatile String currentStreamUrl;
     private Consumer<Boolean> onTrackFinished;
     private long activePlaylistId = -1;
+    private long viewedPlaylistId = -1;
     private long defaultPlaylistId = -1;
 
     private final Map<String, String> serverLocationByLocal = new HashMap<>();
@@ -82,6 +83,9 @@ public class MusicPlayerFacade {
         long playlistId = ensureActivePlaylist();
         List<Track> savedTracks = storage.loadTracks(playlistId);
         queue.addTracks(savedTracks);
+        if (viewedPlaylistId <= 0) {
+            viewedPlaylistId = playlistId;
+        }
         notifyObservers();
         return savedTracks;
     }
@@ -92,6 +96,21 @@ public class MusicPlayerFacade {
 
     public long getActivePlaylistId() {
         return ensureActivePlaylist();
+    }
+
+    public long getViewedPlaylistId() {
+        if (viewedPlaylistId <= 0) {
+            viewedPlaylistId = ensureActivePlaylist();
+        }
+        return viewedPlaylistId;
+    }
+
+    public List<Track> getViewedTracks() {
+        long viewedId = getViewedPlaylistId();
+        if (viewedId == ensureActivePlaylist()) {
+            return queue.getTracks();
+        }
+        return storage.loadTracks(viewedId);
     }
 
     public long getDefaultPlaylistId() {
@@ -112,37 +131,49 @@ public class MusicPlayerFacade {
     }
 
     public void deletePlaylist(long playlistId) {
-        if (isDefaultPlaylist(playlistId)) {
-            throw new IllegalStateException("Базовий плейлист не можна видалити");
-        }
-
-        List<Playlist> playlists = storage.loadPlaylists();
-        if (playlists.size() <= 1) {
-            throw new IllegalStateException("Не можна видалити єдиний плейлист");
-        }
-
-        storage.deletePlaylist(playlistId);
-
-        List<Playlist> remaining = storage.loadPlaylists();
-        if (activePlaylistId == playlistId && !remaining.isEmpty()) {
-            switchPlaylist(remaining.get(0).getId());
-        } else {
-            notifyObservers();
-        }
-    }
-
-    public void switchPlaylist(long playlistId) {
         if (playlistId <= 0) {
             return;
         }
+        if (isDefaultPlaylist(playlistId)) {
+            throw new IllegalStateException("Пункт «Усі треки» не можна видалити");
+        }
 
-        List<Track> playlistTracks = storage.loadTracks(playlistId);
-        activePlaylistId = playlistId;
-        currentStreamUrl = null;
-        player.stop();
-        queue.clear();
-        queue.addTracks(playlistTracks);
+        boolean activeDeleted = activePlaylistId == playlistId;
+        Track current = activeDeleted ? queue.getCurrentTrack() : null;
+
+        storage.deletePlaylist(playlistId);
+
+        long defaultId = getDefaultPlaylistId();
+        if (viewedPlaylistId == playlistId || viewedPlaylistId <= 0) {
+            viewedPlaylistId = defaultId;
+        }
+        if (activeDeleted) {
+            activePlaylistId = defaultId;
+            List<Track> defaultTracks = storage.loadTracks(defaultId);
+            queue.clear();
+            queue.addTracks(defaultTracks);
+            queue.setCurrentIndex(current == null ? -1 : defaultTracks.indexOf(current));
+        }
         notifyObservers();
+    }
+
+    public void previewPlaylist(long playlistId) {
+        if (playlistId <= 0) {
+            return;
+        }
+        viewedPlaylistId = playlistId;
+    }
+
+    public void activateViewedPlaylist() {
+        long viewedId = getViewedPlaylistId();
+        if (viewedId == ensureActivePlaylist()) {
+            return;
+        }
+
+        activePlaylistId = viewedId;
+        queue.clear();
+        queue.addTracks(storage.loadTracks(viewedId));
+        queue.setCurrentIndex(-1);
     }
 
     private long ensureActivePlaylist() {
@@ -161,11 +192,12 @@ public class MusicPlayerFacade {
 
         long defaultId = getDefaultPlaylistId();
         long activeId = ensureActivePlaylist();
+        long targetId = getViewedPlaylistId();
 
         List<Track> candidates = new ArrayList<>(queue.getTracks());
         candidates.addAll(storage.loadTracks(defaultId));
-        if (activeId != defaultId) {
-            candidates.addAll(storage.loadTracks(activeId));
+        if (targetId != defaultId) {
+            candidates.addAll(storage.loadTracks(targetId));
         }
 
         List<Track> pending = new ArrayList<>();
@@ -184,10 +216,12 @@ public class MusicPlayerFacade {
         }
 
         if (!pending.isEmpty()) {
-            queue.addTracks(pending);
+            if (targetId == activeId) {
+                queue.addTracks(pending);
+            }
             storage.addTracksToPlaylist(defaultId, pending);
-            if (activeId != defaultId) {
-                storage.addTracksToPlaylist(activeId, pending);
+            if (targetId != defaultId) {
+                storage.addTracksToPlaylist(targetId, pending);
             }
         }
         notifyObservers();
@@ -267,7 +301,7 @@ public class MusicPlayerFacade {
             return;
         }
 
-        long sourcePlaylistId = ensureActivePlaylist();
+        long sourcePlaylistId = getViewedPlaylistId();
         if (targetPlaylistId == sourcePlaylistId) {
             return;
         }
@@ -276,10 +310,12 @@ public class MusicPlayerFacade {
         if (sourcePlaylistId != getDefaultPlaylistId()) {
             boolean currentRemoved = tracks.contains(queue.getCurrentTrack());
             storage.removeTracksFromPlaylist(sourcePlaylistId, tracks);
-            queue.removeTracks(tracks);
-            if (currentRemoved) {
-                currentStreamUrl = null;
-                player.stop();
+            if (sourcePlaylistId == ensureActivePlaylist()) {
+                queue.removeTracks(tracks);
+                if (currentRemoved) {
+                    currentStreamUrl = null;
+                    player.stop();
+                }
             }
         }
         notifyObservers();

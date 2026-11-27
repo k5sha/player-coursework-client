@@ -188,7 +188,10 @@ public class MainView extends BorderPane {
 
         playlistList.setPlaceholder(new Label("Немає плейлистів"));
         playlistList.getSelectionModel().selectedItemProperty().addListener(
-                (observable, oldValue, selected) -> switchPlaylist(selected));
+                (observable, oldValue, selected) -> {
+                    updatePlaylistControls();
+                    switchPlaylist(selected);
+                });
         playlistList.setCellFactory(list -> new ListCell<>() {
             @Override
             protected void updateItem(Playlist playlist, boolean empty) {
@@ -500,7 +503,9 @@ public class MainView extends BorderPane {
                 @Override
                 protected void updateItem(IndexedTrack item, boolean empty) {
                     super.updateItem(item, empty);
-                    boolean current = !empty && item != null && item.index() == facade.getCurrentIndex();
+                    boolean current = !empty && item != null
+                            && isViewingActivePlaylist()
+                            && item.index() == facade.getCurrentIndex();
                     if (current && !getStyleClass().contains("current-row")) {
                         getStyleClass().add("current-row");
                     } else if (!current) {
@@ -514,6 +519,17 @@ public class MainView extends BorderPane {
                 }
             });
             return row;
+        });
+
+        trackTable.setOnKeyPressed(event -> {
+            if (event.getCode() != KeyCode.ENTER) {
+                return;
+            }
+            IndexedTrack selected = trackTable.getSelectionModel().getSelectedItem();
+            if (selected != null) {
+                playTrack(selected.index());
+            }
+            event.consume();
         });
 
         trackTable.setContextMenu(createTrackContextMenu());
@@ -657,10 +673,10 @@ public class MainView extends BorderPane {
 
     private void fillPlaylistMenu(Menu menu, boolean move) {
         menu.getItems().clear();
-        long activeId = facade.getActivePlaylistId();
+        long currentId = facade.getViewedPlaylistId();
         for (Playlist playlist : playlistList.getItems()) {
             MenuItem item = new MenuItem(playlistDisplayName(playlist));
-            boolean unavailable = playlist.getId() == activeId
+            boolean unavailable = playlist.getId() == currentId
                     || (!move && facade.isDefaultPlaylist(playlist.getId()));
             item.setDisable(unavailable);
             item.setOnAction(event -> {
@@ -715,19 +731,19 @@ public class MainView extends BorderPane {
 
     private void refreshPlaylistViews() {
         List<Playlist> playlists = facade.loadPlaylists();
-        long activeId = facade.getActivePlaylistId();
-        int activeIndex = 0;
+        long viewedId = facade.getViewedPlaylistId();
+        int viewedIndex = 0;
 
         updatingPlaylistSelection = true;
         try {
             playlistList.getItems().setAll(playlists);
             for (int index = 0; index < playlists.size(); index++) {
-                if (playlists.get(index).getId() == activeId) {
-                    activeIndex = index;
+                if (playlists.get(index).getId() == viewedId) {
+                    viewedIndex = index;
                     break;
                 }
             }
-            playlistList.getSelectionModel().select(activeIndex);
+            playlistList.getSelectionModel().select(viewedIndex);
         } finally {
             updatingPlaylistSelection = false;
         }
@@ -737,8 +753,11 @@ public class MainView extends BorderPane {
     private void updatePlaylistControls() {
         Playlist selected = playlistList.getSelectionModel().getSelectedItem();
         deletePlaylistButton.setDisable(selected == null
-                || facade.isDefaultPlaylist(selected.getId())
-                || playlistList.getItems().size() <= 1);
+                || facade.isDefaultPlaylist(selected.getId()));
+    }
+
+    private boolean isViewingActivePlaylist() {
+        return facade.getViewedPlaylistId() == facade.getActivePlaylistId();
     }
 
     private String playlistDisplayName(Playlist playlist) {
@@ -746,17 +765,15 @@ public class MainView extends BorderPane {
     }
 
     private void switchPlaylist(Playlist selected) {
-        if (updatingPlaylistSelection || selected == null
-                || selected.getId() == facade.getActivePlaylistId()) {
+        if (updatingPlaylistSelection || selected == null) {
             return;
         }
 
         try {
-            facade.switchPlaylist(selected.getId());
+            facade.previewPlaylist(selected.getId());
             refreshTrackRows(true);
-            updateNowPlayingFromQueue();
             setStatus(playlistDisplayName(selected) + " · "
-                    + facade.getTracks().size() + " треків");
+                    + facade.getViewedTracks().size() + " треків");
             updateSeekControls();
         } catch (RuntimeException e) {
             setStatus("Помилка: " + e.getMessage());
@@ -792,20 +809,18 @@ public class MainView extends BorderPane {
             return;
         }
         if (facade.isDefaultPlaylist(selected.getId())) {
-            setStatus("Базовий плейлист видалити не можна");
+            setStatus("Пункт «Усі треки» видалити не можна");
             return;
         }
 
         try {
-            boolean activeDeleted = selected.getId() == facade.getActivePlaylistId();
             facade.deletePlaylist(selected.getId());
+            facade.previewPlaylist(facade.getDefaultPlaylistId());
             refreshPlaylistViews();
             refreshTrackRows(true);
-            if (activeDeleted) {
-                updateNowPlayingFromQueue();
-            }
-            setStatus("Видалено: " + selected.getName());
+            updatePlaylistControls();
             updateSeekControls();
+            setStatus("Видалено: " + selected.getName());
         } catch (RuntimeException e) {
             setStatus("Помилка: " + e.getMessage());
         }
@@ -814,7 +829,7 @@ public class MainView extends BorderPane {
     private void refreshTrackRows(boolean selectCurrent) {
         String query = filterField.getText() == null
                 ? "" : filterField.getText().trim().toLowerCase();
-        List<Track> tracks = facade.getTracks();
+        List<Track> tracks = facade.getViewedTracks();
 
         List<IndexedTrack> rows = new ArrayList<>();
         for (int index = 0; index < tracks.size(); index++) {
@@ -825,7 +840,7 @@ public class MainView extends BorderPane {
         }
         trackTable.getItems().setAll(rows);
 
-        if (selectCurrent && !rows.isEmpty()) {
+        if (selectCurrent && isViewingActivePlaylist() && !rows.isEmpty()) {
             selectRowByTrackIndex(facade.getCurrentIndex());
         }
         trackTable.refresh();
@@ -934,14 +949,14 @@ public class MainView extends BorderPane {
             return;
         }
 
-        long activeId = facade.getActivePlaylistId();
-        if (target.getId() == activeId) {
+        long sourceId = facade.getViewedPlaylistId();
+        if (target.getId() == sourceId) {
             setStatus("Оберіть інший плейлист");
             return;
         }
 
         try {
-            boolean fromDefault = facade.isDefaultPlaylist(activeId);
+            boolean fromDefault = facade.isDefaultPlaylist(sourceId);
             boolean currentMoved = !fromDefault && selected.contains(facade.getCurrentTrack());
             facade.moveTracksToPlaylist(target.getId(), selected);
             if (!fromDefault) {
@@ -970,9 +985,10 @@ public class MainView extends BorderPane {
         }
 
         indices.sort(Comparator.reverseOrder());
-        boolean currentRemoved = indices.contains(facade.getCurrentIndex());
         int removedCount = 0;
         try {
+            facade.activateViewedPlaylist();
+            boolean currentRemoved = indices.contains(facade.getCurrentIndex());
             for (int index : indices) {
                 if (facade.removeTrackAt(index) != null) {
                     removedCount++;
@@ -1176,17 +1192,24 @@ public class MainView extends BorderPane {
     }
 
     private void play() {
-        if (facade.getTracks().isEmpty()) {
+        List<Track> tracks = facade.getViewedTracks();
+        if (tracks.isEmpty()) {
             setStatus("Спочатку додайте аудіофайли");
             return;
         }
 
         IndexedTrack selected = trackTable.getSelectionModel().getSelectedItem();
-        playTrack(selected == null ? facade.getCurrentIndex() : selected.index());
+        if (selected != null) {
+            playTrack(selected.index());
+            return;
+        }
+
+        int index = isViewingActivePlaylist() ? facade.getCurrentIndex() : 0;
+        playTrack(Math.max(0, index));
     }
 
     private void playContextTrack() {
-        if (contextTrackIndex >= 0 && contextTrackIndex < facade.getTracks().size()) {
+        if (contextTrackIndex >= 0 && contextTrackIndex < facade.getViewedTracks().size()) {
             playTrack(contextTrackIndex);
         } else {
             play();
@@ -1195,6 +1218,7 @@ public class MainView extends BorderPane {
 
     private void playTrack(int index) {
         try {
+            facade.activateViewedPlaylist();
             Track track = facade.playTrackAt(index);
             if (track == null) {
                 setStatus("Спочатку оберіть треки");
@@ -1209,7 +1233,9 @@ public class MainView extends BorderPane {
     private void showPlayingTrack(Track track) {
         nowPlayingLabel.setText("♪ " + track);
         setStatus("Грає: " + track);
-        selectRowByTrackIndex(facade.getCurrentIndex());
+        if (isViewingActivePlaylist()) {
+            selectRowByTrackIndex(facade.getCurrentIndex());
+        }
         trackTable.refresh();
         updateSeekControls();
     }
