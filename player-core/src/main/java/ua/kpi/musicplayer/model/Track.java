@@ -11,6 +11,7 @@ public class Track {
     private String album;
     private long durationMs;
     private String location;
+    private long serverId;
 
     public Track() {
     }
@@ -60,6 +61,14 @@ public class Track {
 
     public void setLocation(String location) {
         this.location = location;
+    }
+
+    public long getServerId() {
+        return serverId;
+    }
+
+    public void setServerId(long serverId) {
+        this.serverId = serverId;
     }
 
     public String accept(MediaInfoVisitor visitor) {

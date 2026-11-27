@@ -86,6 +86,7 @@ public class MainView extends StackPane {
     private final Button stationPlayButton = new Button("Грати");
     private final Button createPlaylistButton = new Button("Створити");
     private final Button deletePlaylistButton = new Button("Видалити");
+    private final Button syncButton = new Button("Синхронізувати");
     private final Button removeSelectedButton = new Button("Видалити");
     private final ComboBox<Equalizer.Preset> equalizerPresetBox = new ComboBox<>();
     private final ComboBox<Playlist> playlistBox = new ComboBox<>();
@@ -155,6 +156,8 @@ public class MainView extends StackPane {
         deletePlaylistButton.setTooltip(new Tooltip("Видалити плейлист"));
         createPlaylistButton.setOnAction(event -> createPlaylist());
         createPlaylistButton.setTooltip(new Tooltip("Створити плейлист"));
+        syncButton.setOnAction(event -> synchronizeTracks());
+        syncButton.setTooltip(new Tooltip("Синхронізувати треки з сервером"));
         removeSelectedButton.getStyleClass().add("danger-button");
         removeSelectedButton.setOnAction(event -> removeSelectedTracks());
         removeSelectedButton.setTooltip(new Tooltip("Видалити вибрані треки"));
@@ -340,7 +343,7 @@ public class MainView extends StackPane {
         Region titleSpacer = new Region();
         HBox.setHgrow(titleSpacer, Priority.ALWAYS);
         HBox playlistRow = new HBox(10, pageTitle("Плейлисти"), titleSpacer, playlistBox,
-                createPlaylistButton, deletePlaylistButton);
+                createPlaylistButton, deletePlaylistButton, syncButton);
         playlistRow.setAlignment(Pos.CENTER_LEFT);
 
         selectionLabel.getStyleClass().add("muted-label");
@@ -703,6 +706,24 @@ public class MainView extends StackPane {
         } catch (RuntimeException e) {
             statusLabel.setText("Помилка: " + e.getMessage());
         }
+    }
+
+    private void synchronizeTracks() {
+        syncButton.setDisable(true);
+        statusLabel.setText("Синхронізація з сервером...");
+
+        CompletableFuture.supplyAsync(() -> facade.synchronizeTracks())
+                .whenComplete((result, error) -> Platform.runLater(() -> {
+                    syncButton.setDisable(false);
+                    if (error != null) {
+                        statusLabel.setText("Помилка синхронізації: " + errorMessage(error));
+                        return;
+                    }
+
+                    refreshTrackList(true);
+                    statusLabel.setText("Синхронізовано: надіслано " + result.getUploaded()
+                            + ", отримано " + result.getDownloaded());
+                }));
     }
 
     private void addSelectedTracksToPlaylist(Playlist target) {

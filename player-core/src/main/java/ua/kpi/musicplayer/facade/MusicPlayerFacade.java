@@ -11,8 +11,12 @@ import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.storage.TrackStorage;
 import ua.kpi.musicplayer.stream.RadioBrowserClient;
 import ua.kpi.musicplayer.stream.RadioStation;
+import ua.kpi.musicplayer.sync.TrackSyncClient;
+import ua.kpi.musicplayer.sync.TrackSyncResult;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.function.Consumer;
 
@@ -22,6 +26,7 @@ public class MusicPlayerFacade {
     private final PlaybackQueue queue = new PlaybackQueue();
     private final TrackStorage storage = new TrackStorage();
     private final RadioBrowserClient radioBrowserClient = new RadioBrowserClient();
+    private final TrackSyncClient syncClient = new TrackSyncClient();
     private final List<PlayerObserver> observers = new CopyOnWriteArrayList<>();
 
     private volatile String currentStreamUrl;
@@ -204,8 +209,24 @@ public class MusicPlayerFacade {
         }
 
         storage.saveTracks(ensureActivePlaylist(), queue.getTracks());
+        deleteRemoteTrack(removed);
         notifyObservers();
         return removed;
+    }
+
+    private void deleteRemoteTrack(Track track) {
+        if (track == null || track.getServerId() <= 0) {
+            return;
+        }
+
+        long serverId = track.getServerId();
+        CompletableFuture.runAsync(() -> {
+            try {
+                syncClient.deleteTrack(serverId);
+            } catch (RuntimeException ignored) {
+                // Сервер недоступний або трек уже видалено — локальне видалення вже виконано
+            }
+        });
     }
 
     public Track playTrackAt(int index) {
@@ -425,5 +446,47 @@ public class MusicPlayerFacade {
 
     public List<RadioStation> searchStations(String query) {
         return radioBrowserClient.search(query);
+    }
+
+    public TrackSyncResult synchronizeTracks() {
+        List<Track> remoteTracks = syncClient.fetchTracks();
+        List<Track> localTracks = storage.loadTracks(getDefaultPlaylistId());
+
+        // Синхронізація лише додає дані: локальні треки надсилаються, якщо їх немає
+        // на сервері, а серверні треки ніколи не видаляються. Тому видалення на
+        // іншому клієнті не затирає треки цього клієнта.
+        int uploaded = 0;
+        for (Track track : localTracks) {
+            int remoteIndex = remoteTracks.indexOf(track);
+            if (remoteIndex < 0) {
+                syncClient.uploadTrack(track);
+                uploaded++;
+            } else {
+                track.setServerId(remoteTracks.get(remoteIndex).getServerId());
+            }
+        }
+
+        List<Track> downloadedTracks = new ArrayList<>();
+        for (Track track : remoteTracks) {
+            if (!localTracks.contains(track) && !downloadedTracks.contains(track)) {
+                downloadedTracks.add(track);
+            }
+        }
+
+        if (!downloadedTracks.isEmpty()) {
+            addTracksAndSave(downloadedTracks);
+        }
+        applyServerIds(localTracks);
+
+        return new TrackSyncResult(uploaded, downloadedTracks.size());
+    }
+
+    private void applyServerIds(List<Track> tracksWithIds) {
+        for (Track queued : queue.getTracks()) {
+            int index = tracksWithIds.indexOf(queued);
+            if (index >= 0) {
+                queued.setServerId(tracksWithIds.get(index).getServerId());
+            }
+        }
     }
 }
