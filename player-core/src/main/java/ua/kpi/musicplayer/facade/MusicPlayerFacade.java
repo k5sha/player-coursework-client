@@ -11,6 +11,8 @@ import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.storage.TrackStorage;
 import ua.kpi.musicplayer.stream.RadioBrowserClient;
 import ua.kpi.musicplayer.stream.RadioStation;
+import ua.kpi.musicplayer.sync.PlaylistSyncClient;
+import ua.kpi.musicplayer.sync.PlaylistSyncResult;
 import ua.kpi.musicplayer.sync.TrackSyncClient;
 import ua.kpi.musicplayer.sync.TrackSyncResult;
 
@@ -27,6 +29,7 @@ public class MusicPlayerFacade {
     private final TrackStorage storage = new TrackStorage();
     private final RadioBrowserClient radioBrowserClient = new RadioBrowserClient();
     private final TrackSyncClient syncClient = new TrackSyncClient();
+    private final PlaylistSyncClient playlistSyncClient = new PlaylistSyncClient();
     private final List<PlayerObserver> observers = new CopyOnWriteArrayList<>();
 
     private volatile String currentStreamUrl;
@@ -446,6 +449,71 @@ public class MusicPlayerFacade {
 
     public List<RadioStation> searchStations(String query) {
         return radioBrowserClient.search(query);
+    }
+
+    /**
+     * Синхронізує плейлисти з сервером. Якщо сервер недоступний, повертає
+     * результат з ознакою недоступності, не порушуючи локальну роботу.
+     */
+    public PlaylistSyncResult synchronizePlaylists() {
+        try {
+            List<PlaylistSyncClient.RemotePlaylist> remotePlaylists =
+                    playlistSyncClient.fetchPlaylists();
+            List<Playlist> localPlaylists = storage.loadPlaylists();
+
+            int uploaded = 0;
+            for (Playlist playlist : localPlaylists) {
+                playlistSyncClient.uploadPlaylist(playlist.getName(), locationsOf(playlist.getId()));
+                uploaded++;
+            }
+
+            int downloaded = 0;
+            for (PlaylistSyncClient.RemotePlaylist remote : remotePlaylists) {
+                Playlist local = findPlaylistByName(localPlaylists, remote.getName());
+                if (local == null) {
+                    local = storage.createPlaylist(remote.getName());
+                    localPlaylists.add(local);
+                    downloaded++;
+                }
+
+                List<String> knownLocations = locationsOf(local.getId());
+                List<Track> missingTracks = new ArrayList<>();
+                for (String location : remote.getLocations()) {
+                    if (location != null && !location.isBlank()
+                            && !knownLocations.contains(location)) {
+                        missingTracks.add(new Track(null, null, 0, location));
+                        knownLocations.add(location);
+                    }
+                }
+                if (!missingTracks.isEmpty()) {
+                    storage.addTracksToPlaylist(local.getId(), missingTracks);
+                }
+            }
+
+            return new PlaylistSyncResult(uploaded, downloaded, true);
+        } catch (RuntimeException e) {
+            return PlaylistSyncResult.unavailable();
+        }
+    }
+
+    private List<String> locationsOf(long playlistId) {
+        List<String> locations = new ArrayList<>();
+        for (Track track : storage.loadTracks(playlistId)) {
+            String location = track.getLocation();
+            if (location != null && !location.isBlank() && !locations.contains(location)) {
+                locations.add(location);
+            }
+        }
+        return locations;
+    }
+
+    private static Playlist findPlaylistByName(List<Playlist> playlists, String name) {
+        for (Playlist playlist : playlists) {
+            if (playlist.getName().equals(name)) {
+                return playlist;
+            }
+        }
+        return null;
     }
 
     public TrackSyncResult synchronizeTracks() {

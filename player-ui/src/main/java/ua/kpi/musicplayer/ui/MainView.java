@@ -44,6 +44,8 @@ import ua.kpi.musicplayer.model.Track;
 import ua.kpi.musicplayer.observer.PlayerState;
 import ua.kpi.musicplayer.playback.PlaybackQueue;
 import ua.kpi.musicplayer.stream.RadioStation;
+import ua.kpi.musicplayer.sync.PlaylistSyncResult;
+import ua.kpi.musicplayer.sync.TrackSyncResult;
 import ua.kpi.musicplayer.visitor.MediaInfoVisitor;
 import ua.kpi.musicplayer.visitor.SummaryMediaVisitor;
 
@@ -712,18 +714,39 @@ public class MainView extends StackPane {
         syncButton.setDisable(true);
         statusLabel.setText("Синхронізація з сервером...");
 
-        CompletableFuture.supplyAsync(() -> facade.synchronizeTracks())
-                .whenComplete((result, error) -> Platform.runLater(() -> {
-                    syncButton.setDisable(false);
-                    if (error != null) {
-                        statusLabel.setText("Помилка синхронізації: " + errorMessage(error));
-                        return;
-                    }
+        CompletableFuture.supplyAsync(() -> {
+            PlaylistSyncResult playlists = facade.synchronizePlaylists();
+            TrackSyncResult tracks = null;
+            if (playlists.isServerAvailable()) {
+                try {
+                    tracks = facade.synchronizeTracks();
+                } catch (RuntimeException ignored) {
+                    // Сервер зник під час синхронізації — працюємо локально
+                }
+            }
+            return new SyncOutcome(playlists, tracks);
+        }).whenComplete((outcome, error) -> Platform.runLater(() -> {
+            syncButton.setDisable(false);
+            if (error != null) {
+                statusLabel.setText("Сервер недоступний — працюємо локально");
+                return;
+            }
 
-                    refreshTrackList(true);
-                    statusLabel.setText("Синхронізовано: надіслано " + result.getUploaded()
-                            + ", отримано " + result.getDownloaded());
-                }));
+            refreshPlaylistViews();
+            refreshTrackList(true);
+            if (!outcome.playlists().isServerAvailable() || outcome.tracks() == null) {
+                statusLabel.setText("Сервер недоступний — працюємо локально");
+                return;
+            }
+
+            statusLabel.setText("Синхронізовано: треки +" + outcome.tracks().getUploaded()
+                    + "/-" + outcome.tracks().getDownloaded()
+                    + ", плейлисти +" + outcome.playlists().getUploaded()
+                    + "/-" + outcome.playlists().getDownloaded());
+        }));
+    }
+
+    private record SyncOutcome(PlaylistSyncResult playlists, TrackSyncResult tracks) {
     }
 
     private void addSelectedTracksToPlaylist(Playlist target) {

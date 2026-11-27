@@ -98,7 +98,7 @@ public class TrackSyncClient {
                 + ",\"location\":" + quote(track.getLocation()) + "}";
     }
 
-    private static String quote(String value) {
+    static String quote(String value) {
         if (value == null) {
             return "null";
         }
@@ -145,7 +145,7 @@ public class TrackSyncClient {
         return tracks;
     }
 
-    private static List<String> splitObjects(String json) {
+    static List<String> splitObjects(String json) {
         List<String> objects = new ArrayList<>();
         if (json == null) {
             return objects;
@@ -187,7 +187,7 @@ public class TrackSyncClient {
         return objects;
     }
 
-    private static String readString(String object, String key) {
+    static String readString(String object, String key) {
         int start = valueStart(object, key);
         if (start < 0 || object.charAt(start) != '"') {
             return null;
@@ -232,7 +232,7 @@ public class TrackSyncClient {
         }
     }
 
-    private static int valueStart(String object, String key) {
+    static int valueStart(String object, String key) {
         String marker = "\"" + key + "\"";
         int keyIndex = object.indexOf(marker);
         if (keyIndex < 0) {
@@ -251,7 +251,7 @@ public class TrackSyncClient {
         return start < object.length() ? start : -1;
     }
 
-    private static String unescape(String value) {
+    static String unescape(String value) {
         StringBuilder result = new StringBuilder(value.length());
         for (int i = 0; i < value.length(); i++) {
             char current = value.charAt(i);
