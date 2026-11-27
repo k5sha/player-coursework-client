@@ -159,13 +159,98 @@ public class MusicPlayerFacade {
             return;
         }
 
-        queue.addTracks(tracks);
         long defaultId = getDefaultPlaylistId();
-        storage.addTracksToPlaylist(defaultId, tracks);
-        if (ensureActivePlaylist() != defaultId) {
-            storage.addTracksToPlaylist(activePlaylistId, tracks);
+        long activeId = ensureActivePlaylist();
+
+        List<Track> candidates = new ArrayList<>(queue.getTracks());
+        candidates.addAll(storage.loadTracks(defaultId));
+        if (activeId != defaultId) {
+            candidates.addAll(storage.loadTracks(activeId));
+        }
+
+        List<Track> pending = new ArrayList<>();
+        for (Track track : tracks) {
+            Track existing = findExistingTrack(candidates, track);
+            if (existing == null) {
+                pending.add(track);
+                candidates.add(track);
+                continue;
+            }
+
+            updateExistingTrack(existing, track);
+            if (!containsSame(pending, existing) && !queue.getTracks().contains(existing)) {
+                pending.add(existing);
+            }
+        }
+
+        if (!pending.isEmpty()) {
+            queue.addTracks(pending);
+            storage.addTracksToPlaylist(defaultId, pending);
+            if (activeId != defaultId) {
+                storage.addTracksToPlaylist(activeId, pending);
+            }
         }
         notifyObservers();
+    }
+
+    private static Track findExistingTrack(List<Track> candidates, Track track) {
+        for (Track candidate : candidates) {
+            if (isSameTrack(candidate, track)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean containsSame(List<Track> tracks, Track target) {
+        for (Track track : tracks) {
+            if (track == target) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void updateExistingTrack(Track existing, Track track) {
+        String oldLocation = existing.getLocation();
+        String newLocation = track.getLocation();
+
+        existing.setLocation(newLocation);
+        existing.setLocalOnly(false);
+        if (hasText(track.getTitle())) {
+            existing.setTitle(track.getTitle());
+        }
+        if (hasText(track.getArtist())) {
+            existing.setArtist(track.getArtist());
+        }
+        if (hasText(track.getAlbum())) {
+            existing.setAlbum(track.getAlbum());
+        }
+        if (track.getDurationMs() > 0) {
+            existing.setDurationMs(track.getDurationMs());
+        }
+        if (track.getServerId() > 0) {
+            existing.setServerId(track.getServerId());
+        }
+
+        for (Track queued : queue.getTracks()) {
+            if (queued == existing || oldLocation == null
+                    || !oldLocation.equals(queued.getLocation())) {
+                continue;
+            }
+            queued.setLocation(newLocation);
+            queued.setLocalOnly(false);
+            queued.setServerId(existing.getServerId());
+        }
+
+        if (oldLocation != null && !oldLocation.equals(newLocation)) {
+            storage.updateTrackLocation(oldLocation, newLocation);
+        }
+        storage.updateTrackLocalOnly(newLocation, false);
+        if (existing.getServerId() > 0) {
+            storage.updateTrackServerId(newLocation, existing.getServerId());
+        }
+        storage.updateTrackMetadata(existing);
     }
 
     public void addTracksToPlaylist(long playlistId, List<Track> tracks) {
@@ -644,6 +729,39 @@ public class MusicPlayerFacade {
         return Track.normalizeFileName(track.getLocation());
     }
 
+    private static boolean isSameTrack(Track first, Track second) {
+        if (first == null || second == null) {
+            return false;
+        }
+
+        String firstLocation = first.getLocation();
+        if (hasText(firstLocation) && firstLocation.equals(second.getLocation())) {
+            return true;
+        }
+
+        String firstFileName = normalizedFileNameOf(first);
+        String secondFileName = normalizedFileNameOf(second);
+        if (!firstFileName.isEmpty() && firstFileName.equalsIgnoreCase(secondFileName)) {
+            return true;
+        }
+
+        return hasText(first.getTitle())
+                && hasText(second.getTitle())
+                && first.getDurationMs() > 0
+                && second.getDurationMs() > 0
+                && first.getTitle().trim().equalsIgnoreCase(second.getTitle().trim())
+                && artistOf(first).equalsIgnoreCase(artistOf(second))
+                && durationSecondsOf(first) == durationSecondsOf(second);
+    }
+
+    private static String artistOf(Track track) {
+        return track.getArtist() == null ? "" : track.getArtist().trim();
+    }
+
+    private static long durationSecondsOf(Track track) {
+        return Math.max(0, Math.round(track.getDurationMs() / 1000.0));
+    }
+
     private static boolean needsMetadata(Track track) {
         if (track == null) {
             return false;
@@ -712,9 +830,59 @@ public class MusicPlayerFacade {
         }
     }
 
+    private List<Track> removeDuplicateLocalTracks(List<Track> localTracks) {
+        List<Track> remaining = new ArrayList<>();
+        for (Track track : localTracks) {
+            if (track.getServerId() <= 0) {
+                Track server = findServerDuplicate(track, localTracks);
+                if (server != null && mergeLocalDuplicate(track, server)) {
+                    continue;
+                }
+            }
+            remaining.add(track);
+        }
+        return remaining;
+    }
+
+    private static Track findServerDuplicate(Track track, List<Track> tracks) {
+        for (Track candidate : tracks) {
+            if (candidate != track && candidate.getServerId() > 0
+                    && isSameTrack(track, candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private boolean mergeLocalDuplicate(Track local, Track server) {
+        String localLocation = local.getLocation();
+        String serverLocation = server.getLocation();
+        if (!hasText(localLocation) || localLocation.equals(serverLocation)) {
+            return false;
+        }
+
+        boolean localQueued = queue.getTracks().contains(local);
+        boolean serverQueued = queue.getTracks().contains(server);
+        queue.removeTracks(List.of(local));
+        storage.removeTrack(localLocation);
+        storage.updateTrackLocation(serverLocation, localLocation);
+        server.setLocation(localLocation);
+        for (Track queued : queue.getTracks()) {
+            if (queued != server && serverLocation != null
+                    && serverLocation.equals(queued.getLocation())) {
+                queued.setLocation(localLocation);
+            }
+        }
+        if (localQueued && !serverQueued) {
+            queue.addTracks(List.of(server));
+        }
+        return true;
+    }
+
     public TrackSyncResult synchronizeTracks() {
         List<Track> remoteTracks = syncClient.fetchTracks();
-        List<Track> localTracks = storage.loadTracks(getDefaultPlaylistId());
+        List<Track> localTracks = removeDuplicateLocalTracks(
+                storage.loadTracks(getDefaultPlaylistId()));
         serverLocationByLocal.clear();
 
         Map<String, Track> queuedByLocation = new HashMap<>();
